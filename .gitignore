@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虛擬環境
+.venv/
+venv/
+env/
+
+# 日誌
+logs/
+*.log
+
+# 環境變數
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# 其他
+.DS_Store
