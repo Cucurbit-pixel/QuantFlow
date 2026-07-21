@@ -1,0 +1,29 @@
+name: Daily Stock Scan
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # 每天香港時間早上 8:00 自動跑
+  workflow_dispatch:      # 同時支援手動觸發
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run scan
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python -m screener.merge
