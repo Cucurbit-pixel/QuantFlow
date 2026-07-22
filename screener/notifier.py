@@ -4,10 +4,25 @@ import time
 from typing import List
 
 
+def get_priority(signal_type: str) -> str:
+    """根據訊號類型返回優先級"""
+    high_priority = ["sell_call", "sell_put"]
+    medium_priority = ["long_call", "long_put"]
+    
+    if signal_type in high_priority:
+        return "🔴 高"
+    elif signal_type in medium_priority:
+        return "🟡 中"
+    elif signal_type in ["strong_buy", "buy"]:
+        return "🟢 普通"
+    else:
+        return "⚪ 低"
+
+
 def build_embed(candidate: dict) -> dict:
     """
     建立 Discord Embed 通知
-    支援四種 Options 訊號 + 三級止盈
+    支援四種 Options 訊號 + 優先級 + 三級止盈
     """
     ticker = candidate.get("ticker", "UNKNOWN")
     tier = candidate.get("tier", "C")
@@ -48,6 +63,7 @@ def build_embed(candidate: dict) -> dict:
         "watch": "👀 觀察",
     }
     signal_display = signal_map.get(signal_type, "👀 觀察")
+    priority = get_priority(signal_type)
 
     entry = candidate.get("entry", 0)
     tp1 = candidate.get("tp1", 0)
@@ -66,7 +82,8 @@ def build_embed(candidate: dict) -> dict:
         f"**RS Rating: {rs_rating}**\n\n"
         f"**方向 / 訊號**\n"
         f"分層：{tier}級\n"
-        f"訊號：{signal_display}\n\n"
+        f"訊號：{signal_display}\n"
+        f"優先級：{priority}\n\n"
         f"**🎯 RS + MACD 動能**\n"
         f"• RS Rating：{rs_rating} (vs QQQ)\n"
         f"• MACD 狀態：{macd_display}\n"
@@ -84,7 +101,7 @@ def build_embed(candidate: dict) -> dict:
         f"• 止盈 Level 3：${tp3:.2f}（剩餘倉位）"
     )
 
-    # 如果有 Options 訊號，就加 Options 建議
+    # Options 建議
     if signal_type in ["sell_call", "sell_put", "long_call", "long_put"] and suggested_strike:
         options_title = {
             "sell_call": "📉 Options 建議（Sell Call）",
