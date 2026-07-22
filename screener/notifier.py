@@ -5,25 +5,15 @@ from typing import List
 
 
 def get_priority(signal_type: str) -> str:
-    """根據訊號類型返回優先級"""
-    high_priority = ["sell_call", "sell_put"]
-    medium_priority = ["long_call", "long_put"]
-    
-    if signal_type in high_priority:
-        return "🔴 高"
-    elif signal_type in medium_priority:
-        return "🟡 中"
-    elif signal_type in ["strong_buy", "buy"]:
+    if signal_type == "strong_buy":
+        return "🟢 普通"
+    elif signal_type == "buy":
         return "🟢 普通"
     else:
         return "⚪ 低"
 
 
 def build_embed(candidate: dict) -> dict:
-    """
-    建立 Discord Embed 通知
-    支援四種 Options 訊號 + 優先級 + 三級止盈
-    """
     ticker = candidate.get("ticker", "UNKNOWN")
     tier = candidate.get("tier", "C")
     rs_rating = candidate.get("rs_rating", 0)
@@ -31,8 +21,9 @@ def build_embed(candidate: dict) -> dict:
     macd_status = candidate.get("macd_status", "neutral")
     trend = candidate.get("trend", "多頭排列")
     signal_type = candidate.get("signal_type", "watch")
+    distance_to_52w = candidate.get("distance_to_52w_high", 0)
+    breakout_status = candidate.get("breakout_status", "➖ 無明顯突破")
 
-    # Tier 顏色
     tier_colors = {
         "S": 0xE63946,
         "A": 0xF4A261,
@@ -42,7 +33,6 @@ def build_embed(candidate: dict) -> dict:
     }
     color = tier_colors.get(tier, 0x6C757D)
 
-    # MACD 顯示
     macd_map = {
         "golden_cross": "🟢 金叉",
         "bullish_momentum": "🟢 多頭動能",
@@ -52,12 +42,7 @@ def build_embed(candidate: dict) -> dict:
     }
     macd_display = macd_map.get(macd_status, "⚪ 中性")
 
-    # 訊號顯示
     signal_map = {
-        "sell_call": "📉 Sell Call（見頂）",
-        "sell_put": "📈 Sell Put（見底）",
-        "long_call": "🚀 Long Call（看漲）",
-        "long_put": "🔻 Long Put（看跌）",
         "strong_buy": "🚀🚀🚀 強烈買入",
         "buy": "🚀 買入",
         "watch": "👀 觀察",
@@ -73,9 +58,12 @@ def build_embed(candidate: dict) -> dict:
     close = candidate.get("close", 0)
     ma20 = candidate.get("ma20", 0)
     ma50 = candidate.get("ma50", 0)
-    suggested_strike = candidate.get("suggested_strike")
-    near_term_exp = candidate.get("near_term_exp", "")
-    monthly_exp = candidate.get("monthly_exp", "")
+
+    # 距離 52 週新高顯示
+    if distance_to_52w >= 0:
+        distance_text = f"距離 52 週新高：已創新高 (+{distance_to_52w}%)"
+    else:
+        distance_text = f"距離 52 週新高：{distance_to_52w}%"
 
     description = (
         f"**級別：{tier}**\n"
@@ -91,7 +79,9 @@ def build_embed(candidate: dict) -> dict:
         f"**📊 技術面摘要**\n"
         f"• 趨勢：{trend}\n"
         f"• MA20：${ma20:.2f}\n"
-        f"• MA50：${ma50:.2f}\n\n"
+        f"• MA50：${ma50:.2f}\n"
+        f"• {distance_text}\n"
+        f"• 突破狀態：{breakout_status}\n\n"
         f"**⚠️ 風險控制**\n"
         f"• 現價：${close:.2f}\n"
         f"• 入場：${entry:.2f}\n"
@@ -100,22 +90,6 @@ def build_embed(candidate: dict) -> dict:
         f"• 止盈 Level 2：${tp2:.2f}（再出 40%）\n"
         f"• 止盈 Level 3：${tp3:.2f}（剩餘倉位）"
     )
-
-    # Options 建議
-    if signal_type in ["sell_call", "sell_put", "long_call", "long_put"] and suggested_strike:
-        options_title = {
-            "sell_call": "📉 Options 建議（Sell Call）",
-            "sell_put": "📈 Options 建議（Sell Put）",
-            "long_call": "🚀 Options 建議（Long Call）",
-            "long_put": "🔻 Options 建議（Long Put）",
-        }.get(signal_type, "Options 建議")
-
-        description += (
-            f"\n\n**{options_title}**\n"
-            f"• 建議行權價：${suggested_strike:.2f}\n"
-            f"• 近月到期：{near_term_exp}\n"
-            f"• 月期權到期：{monthly_exp}"
-        )
 
     embed = {
         "title": f"📊 {ticker}",
