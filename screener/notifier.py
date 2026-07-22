@@ -7,25 +7,27 @@ from typing import List
 def build_embed(candidate: dict) -> dict:
     """
     建立 Discord Embed 通知
-    支援三級止盈 + Tier 顏色 + MACD 狀態
+    支援四種 Options 訊號 + 三級止盈
     """
     ticker = candidate.get("ticker", "UNKNOWN")
     tier = candidate.get("tier", "C")
     rs_rating = candidate.get("rs_rating", 0)
+    rsi = candidate.get("rsi", 0)
     macd_status = candidate.get("macd_status", "neutral")
     trend = candidate.get("trend", "多頭排列")
-    
-    # ========== Tier 顏色 ==========
+    signal_type = candidate.get("signal_type", "watch")
+
+    # Tier 顏色
     tier_colors = {
-        "S": 0xE63946,  # 紅色
-        "A": 0xF4A261,  # 橙色
-        "B": 0x2A9D8F,  # 綠色
-        "C": 0xE9C46A,  # 黃色
-        "D": 0x457B9D,  # 藍色
+        "S": 0xE63946,
+        "A": 0xF4A261,
+        "B": 0x2A9D8F,
+        "C": 0xE9C46A,
+        "D": 0x457B9D,
     }
     color = tier_colors.get(tier, 0x6C757D)
 
-    # ========== MACD 狀態顯示 ==========
+    # MACD 顯示
     macd_map = {
         "golden_cross": "🟢 金叉",
         "bullish_momentum": "🟢 多頭動能",
@@ -35,33 +37,40 @@ def build_embed(candidate: dict) -> dict:
     }
     macd_display = macd_map.get(macd_status, "⚪ 中性")
 
-    # ========== 訊號強度 ==========
-    if tier == "S" and rs_rating >= 90:
-        signal = "🚀🚀🚀 強烈買入"
-    elif tier in ["S", "A"]:
-        signal = "🚀🚀 買入"
-    else:
-        signal = "🚀 觀察"
+    # 訊號顯示
+    signal_map = {
+        "sell_call": "📉 Sell Call（見頂）",
+        "sell_put": "📈 Sell Put（見底）",
+        "long_call": "🚀 Long Call（看漲）",
+        "long_put": "🔻 Long Put（看跌）",
+        "strong_buy": "🚀🚀🚀 強烈買入",
+        "buy": "🚀 買入",
+        "watch": "👀 觀察",
+    }
+    signal_display = signal_map.get(signal_type, "👀 觀察")
 
-    # ========== 三級止盈 ==========
     entry = candidate.get("entry", 0)
-    tp1 = candidate.get("tp1", round(entry * 1.05, 2))
-    tp2 = candidate.get("tp2", round(entry * 1.10, 2))
-    tp3 = candidate.get("tp3", round(entry * 1.15, 2))
+    tp1 = candidate.get("tp1", 0)
+    tp2 = candidate.get("tp2", 0)
+    tp3 = candidate.get("tp3", 0)
     stop_loss = candidate.get("stop_loss", 0)
     close = candidate.get("close", 0)
     ma20 = candidate.get("ma20", 0)
     ma50 = candidate.get("ma50", 0)
+    suggested_strike = candidate.get("suggested_strike")
+    near_term_exp = candidate.get("near_term_exp", "")
+    monthly_exp = candidate.get("monthly_exp", "")
 
     description = (
         f"**級別：{tier}**\n"
         f"**RS Rating: {rs_rating}**\n\n"
         f"**方向 / 訊號**\n"
         f"分層：{tier}級\n"
-        f"訊號：{signal}\n\n"
+        f"訊號：{signal_display}\n\n"
         f"**🎯 RS + MACD 動能**\n"
         f"• RS Rating：{rs_rating} (vs QQQ)\n"
-        f"• MACD 狀態：{macd_display}\n\n"
+        f"• MACD 狀態：{macd_display}\n"
+        f"• RSI：{rsi}\n\n"
         f"**📊 技術面摘要**\n"
         f"• 趨勢：{trend}\n"
         f"• MA20：${ma20:.2f}\n"
@@ -74,6 +83,22 @@ def build_embed(candidate: dict) -> dict:
         f"• 止盈 Level 2：${tp2:.2f}（再出 40%）\n"
         f"• 止盈 Level 3：${tp3:.2f}（剩餘倉位）"
     )
+
+    # 如果有 Options 訊號，就加 Options 建議
+    if signal_type in ["sell_call", "sell_put", "long_call", "long_put"] and suggested_strike:
+        options_title = {
+            "sell_call": "📉 Options 建議（Sell Call）",
+            "sell_put": "📈 Options 建議（Sell Put）",
+            "long_call": "🚀 Options 建議（Long Call）",
+            "long_put": "🔻 Options 建議（Long Put）",
+        }.get(signal_type, "Options 建議")
+
+        description += (
+            f"\n\n**{options_title}**\n"
+            f"• 建議行權價：${suggested_strike:.2f}\n"
+            f"• 近月到期：{near_term_exp}\n"
+            f"• 月期權到期：{monthly_exp}"
+        )
 
     embed = {
         "title": f"📊 {ticker}",
@@ -88,7 +113,6 @@ def build_embed(candidate: dict) -> dict:
 
 
 def send_discord_embed(candidate: dict) -> bool:
-    """發送單一股票的 Discord Embed 通知"""
     webhook = os.getenv("DISCORD_WEBHOOK", "")
     
     if not webhook:
@@ -114,10 +138,6 @@ def send_discord_embed(candidate: dict) -> bool:
 
 
 def send_multiple_embeds(candidates: List[dict], batch_size: int = 10) -> None:
-    """
-    批次發送 Discord Embed，避免觸發速率限制
-    Discord 單一訊息最多支援 10 個 embeds
-    """
     webhook = os.getenv("DISCORD_WEBHOOK", "")
     
     if not webhook:
@@ -127,14 +147,11 @@ def send_multiple_embeds(candidates: List[dict], batch_size: int = 10) -> None:
     if not candidates:
         return
 
-    # 分批處理（每批最多 10 個）
     for i in range(0, len(candidates), batch_size):
         batch = candidates[i:i + batch_size]
         embeds = [build_embed(c) for c in batch]
 
-        payload = {
-            "embeds": embeds
-        }
+        payload = {"embeds": embeds}
 
         try:
             response = requests.post(webhook, json=payload, timeout=10)
@@ -142,19 +159,15 @@ def send_multiple_embeds(candidates: List[dict], batch_size: int = 10) -> None:
             if response.status_code in (200, 204):
                 print(f"✅ 成功發送批次 {i//batch_size + 1}（{len(batch)} 隻股票）")
             elif response.status_code == 429:
-                # 被限速，等待後重試
                 try:
                     retry_after = response.json().get("retry_after", 2)
                 except Exception:
                     retry_after = 2
-                    
                 print(f"⚠️ 觸發速率限制，等待 {retry_after} 秒後重試...")
                 time.sleep(retry_after + 0.5)
-                
-                # 重試一次
                 response = requests.post(webhook, json=payload, timeout=10)
                 if response.status_code in (200, 204):
-                    print(f"✅ 重試成功")
+                    print("✅ 重試成功")
                 else:
                     print(f"❌ 重試仍然失敗: {response.status_code}")
             else:
@@ -163,13 +176,11 @@ def send_multiple_embeds(candidates: List[dict], batch_size: int = 10) -> None:
         except Exception as e:
             print(f"❌ 發送時發生錯誤: {e}")
 
-        # 批次之間稍微停頓，進一步降低被限速機會
         if i + batch_size < len(candidates):
             time.sleep(1.0)
 
 
 def send_discord_message(message: str) -> bool:
-    """發送簡單文字訊息（備用）"""
     webhook = os.getenv("DISCORD_WEBHOOK", "")
     
     if not webhook:
