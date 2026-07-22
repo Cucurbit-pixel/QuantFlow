@@ -144,3 +144,4 @@ def fetch_multiple_stocks(tickers: list) -> list:
         if data:
             results.append(data)
     return results
+    
