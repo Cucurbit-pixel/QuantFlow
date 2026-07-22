@@ -13,10 +13,13 @@ def run_full_scan():
     # 建立/更新 Universe
     build_universe()
 
-    # ========== 真實股票清單（可之後改成從 Universe 讀取）==========
+    # ========== 25 隻股票清單 ==========
     tickers = [
-        "AAPL", "NVDA", "TSLA", "MSFT", "AMZN",
-        "META", "GOOGL", "AMD", "AVGO", "CRM"
+        "AAPL", "NVDA", "MSFT", "AMZN", "META",
+        "GOOGL", "TSLA", "AMD", "AVGO", "CRM",
+        "NFLX", "COST", "ADBE", "PEP", "LLY",
+        "V", "MA", "JPM", "XOM", "UNH",
+        "HD", "PG", "KO", "WMT", "ORCL"
     ]
 
     # 獲取真實數據
