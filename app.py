@@ -130,58 +130,18 @@ def get_fear_greed():
 
 
 def get_options_alerts():
-    """
-    期權異動數據（暫時用模擬，之後改成真實掃描）
-    level: high / medium / low
-    """
-    # TODO: 之後改為真實 yfinance Vol/OI 掃描結果
-    return [
-        {
-            "level": "high",
-            "ticker": "TSLA",
-            "option_type": "PUT",
-            "strike": 250.0,
-            "expiry": "08-15",
-            "vol_oi": 4.2,
-            "moneyness": "價外"
-        },
-        {
-            "level": "high",
-            "ticker": "SPY",
-            "option_type": "PUT",
-            "strike": 580.0,
-            "expiry": "08-01",
-            "vol_oi": 3.1,
-            "moneyness": "價內"
-        },
-        {
-            "level": "medium",
-            "ticker": "NVDA",
-            "option_type": "CALL",
-            "strike": 140.0,
-            "expiry": "08-15",
-            "vol_oi": 2.5,
-            "moneyness": "價內"
-        },
-        {
-            "level": "medium",
-            "ticker": "AAPL",
-            "option_type": "CALL",
-            "strike": 230.0,
-            "expiry": "08-08",
-            "vol_oi": 2.1,
-            "moneyness": "價外"
-        },
-        {
-            "level": "low",
-            "ticker": "AMD",
-            "option_type": "CALL",
-            "strike": 160.0,
-            "expiry": "08-15",
-            "vol_oi": 1.8,
-            "moneyness": "價內"
-        },
-    ]
+    """獲取期權異動（真實 Vol/OI 掃描）"""
+    try:
+        from screener.options_scanner import scan_options_unusual
+        alerts = scan_options_unusual(
+            min_vol=200,
+            min_vol_oi=2.0,
+            max_results=12
+        )
+        return alerts
+    except Exception as e:
+        print(f"期權掃描錯誤: {e}")
+        return []
 
 
 def run_scan_background():
