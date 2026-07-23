@@ -1,9 +1,15 @@
+import json
+from pathlib import Path
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 from screener.common import get_logger
 
 logger = get_logger(__name__)
 
-# 精選流動性高的股票（避免掃太多導致超時）
+OPTIONS_CACHE_PATH = Path("data/options_alerts.json")
+CACHE_MINUTES = 15  # 快取有效時間（分鐘）
+
 OPTIONS_UNIVERSE = [
     "SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "TSLA", "AMD",
     "META", "AMZN", "GOOGL", "AVGO", "NFLX", "CRM", "ORCL",
@@ -12,7 +18,6 @@ OPTIONS_UNIVERSE = [
 
 
 def get_moneyness(option_type: str, strike: float, spot: float) -> str:
-    """判斷價內 / 價外 / 平價"""
     if option_type == "CALL":
         if strike < spot * 0.98:
             return "價內"
@@ -20,7 +25,7 @@ def get_moneyness(option_type: str, strike: float, spot: float) -> str:
             return "價外"
         else:
             return "平價"
-    else:  # PUT
+    else:
         if strike > spot * 1.02:
             return "價內"
         elif strike < spot * 0.98:
@@ -30,7 +35,6 @@ def get_moneyness(option_type: str, strike: float, spot: float) -> str:
 
 
 def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0) -> list:
-    """掃描單一股票的期權異動"""
     alerts = []
     try:
         stock = yf.Ticker(ticker)
@@ -39,15 +43,13 @@ def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0
             return []
         spot = float(hist["Close"].iloc[-1])
 
-        # 只取最近 3 個到期日，加快速度
-        expirations = stock.options[:3] if stock.options else []
+        expirations = stock.options[:2] if stock.options else []  # 只取最近 2 個到期，加快速度
         if not expirations:
             return []
 
         for exp in expirations:
             try:
                 chain = stock.option_chain(exp)
-                # 轉成 MM-DD
                 parts = exp.split("-")
                 exp_short = f"{parts[1]}-{parts[2]}" if len(parts) == 3 else exp
 
@@ -67,7 +69,6 @@ def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0
                         if vol_oi < min_vol_oi:
                             continue
 
-                        # 分級
                         if vol_oi >= 4.0 and volume >= 500:
                             level = "high"
                         elif vol_oi >= 2.5 and volume >= 300:
@@ -100,27 +101,69 @@ def scan_options_unusual(
     tickers: list = None,
     min_vol: int = 200,
     min_vol_oi: float = 2.0,
-    max_results: int = 15
+    max_results: int = 12
 ) -> list:
-    """
-    掃描期權異動
-    回傳格式同 Dashboard 使用的結構
-    """
     if tickers is None:
         tickers = OPTIONS_UNIVERSE
 
     all_alerts = []
-    logger.info(f"開始期權異動掃描，共 {len(tickers)} 隻...")
+    logger.info(f"開始期權異動掃描（並行），共 {len(tickers)} 隻...")
 
-    for ticker in tickers:
-        alerts = scan_ticker_options(ticker, min_vol=min_vol, min_vol_oi=min_vol_oi)
-        all_alerts.extend(alerts)
+    def fetch_one(ticker):
+        return scan_ticker_options(ticker, min_vol=min_vol, min_vol_oi=min_vol_oi)
 
-    # 按爆發比例由高到低排序
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(fetch_one, t): t for t in tickers}
+        for future in as_completed(futures):
+            try:
+                alerts = future.result()
+                all_alerts.extend(alerts)
+            except Exception as e:
+                logger.error(f"並行期權掃描失敗: {e}")
+
     all_alerts.sort(key=lambda x: x["vol_oi"], reverse=True)
-
-    # 限制數量
     result = all_alerts[:max_results]
     logger.info(f"期權異動掃描完成，找到 {len(result)} 筆")
-
     return result
+
+
+def save_options_cache(alerts: list):
+    Path("data").mkdir(exist_ok=True)
+    data = {
+        "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "alerts": alerts
+    }
+    with open(OPTIONS_CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_options_cache() -> list:
+    """讀取快取，過期則回傳空列表"""
+    if not OPTIONS_CACHE_PATH.exists():
+        return []
+    try:
+        with open(OPTIONS_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        scan_time = datetime.strptime(data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+        if datetime.now() - scan_time > timedelta(minutes=CACHE_MINUTES):
+            logger.info("期權快取已過期")
+            return []
+        return data.get("alerts", [])
+    except Exception as e:
+        logger.error(f"讀取期權快取失敗: {e}")
+        return []
+
+
+def get_or_scan_options(force: bool = False) -> list:
+    """
+    優先讀快取；force=True 或快取過期時重新掃描並寫入快取
+    """
+    if not force:
+        cached = load_options_cache()
+        if cached:
+            logger.info(f"使用期權快取，共 {len(cached)} 筆")
+            return cached
+
+    alerts = scan_options_unusual()
+    save_options_cache(alerts)
+    return alerts
