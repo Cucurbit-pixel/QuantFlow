@@ -8,17 +8,16 @@ from typing import List
 
 app = FastAPI(title="QuantFlow Dashboard")
 
-# 儲存所有 WebSocket 連線
 active_connections: List[WebSocket] = []
 
 
 async def broadcast(message: dict):
-    """向所有連線的客戶端廣播訊息"""
     for connection in active_connections[:]:
         try:
             await connection.send_json(message)
         except Exception:
-            active_connections.remove(connection)
+            if connection in active_connections:
+                active_connections.remove(connection)
 
 
 def load_config():
@@ -130,13 +129,66 @@ def get_fear_greed():
     return None, None
 
 
+def get_options_alerts():
+    """
+    期權異動數據（暫時用模擬，之後改成真實掃描）
+    level: high / medium / low
+    """
+    # TODO: 之後改為真實 yfinance Vol/OI 掃描結果
+    return [
+        {
+            "level": "high",
+            "ticker": "TSLA",
+            "option_type": "PUT",
+            "strike": 250.0,
+            "expiry": "08-15",
+            "vol_oi": 4.2,
+            "moneyness": "價外"
+        },
+        {
+            "level": "high",
+            "ticker": "SPY",
+            "option_type": "PUT",
+            "strike": 580.0,
+            "expiry": "08-01",
+            "vol_oi": 3.1,
+            "moneyness": "價內"
+        },
+        {
+            "level": "medium",
+            "ticker": "NVDA",
+            "option_type": "CALL",
+            "strike": 140.0,
+            "expiry": "08-15",
+            "vol_oi": 2.5,
+            "moneyness": "價內"
+        },
+        {
+            "level": "medium",
+            "ticker": "AAPL",
+            "option_type": "CALL",
+            "strike": 230.0,
+            "expiry": "08-08",
+            "vol_oi": 2.1,
+            "moneyness": "價外"
+        },
+        {
+            "level": "low",
+            "ticker": "AMD",
+            "option_type": "CALL",
+            "strike": 160.0,
+            "expiry": "08-15",
+            "vol_oi": 1.8,
+            "moneyness": "價內"
+        },
+    ]
+
+
 def run_scan_background():
-    """背景執行掃描，完成後透過 WebSocket 通知"""
     try:
         from screener.merge import run_full_scan
         run_full_scan()
         print("✅ 背景掃描完成")
-        # 通知所有連線的客戶端
         asyncio.run(broadcast({"type": "scan_complete"}))
     except Exception as e:
         print(f"❌ 背景掃描錯誤: {e}")
@@ -167,6 +219,7 @@ def dashboard():
     us_indices = indices[:3]
     hsi = indices[3] if len(indices) > 3 else None
     fg_score, fg_level = get_fear_greed()
+    options_alerts = get_options_alerts()
 
     def render_index_item(idx):
         color = "#22C55E" if idx["change_pct"] > 0 else "#EF4444" if idx["change_pct"] < 0 else "#A78BFA"
@@ -180,10 +233,7 @@ def dashboard():
         """
 
     us_html = "".join([render_index_item(i) for i in us_indices])
-
-    hsi_html = ""
-    if hsi:
-        hsi_html = render_index_item(hsi)
+    hsi_html = render_index_item(hsi) if hsi else ""
 
     if fg_score is not None:
         fg_html = f"""
@@ -204,6 +254,29 @@ def dashboard():
         </div>
         """
 
+    # 期權異動區塊（有數據先顯示）
+    options_html = ""
+    if options_alerts:
+        high = [a for a in options_alerts if a["level"] == "high"]
+        medium = [a for a in options_alerts if a["level"] == "medium"]
+        low = [a for a in options_alerts if a["level"] == "low"]
+
+        def render_alert_line(a):
+            return f"• {a['ticker']} {a['option_type']} {a['strike']} | 到期 {a['expiry']} | 爆發 {a['vol_oi']}x | {a['moneyness']}"
+
+        high_html = "".join([f"<div class='opt-line'>{render_alert_line(a)}</div>" for a in high])
+        medium_html = "".join([f"<div class='opt-line'>{render_alert_line(a)}</div>" for a in medium])
+        low_html = "".join([f"<div class='opt-line'>{render_alert_line(a)}</div>" for a in low])
+
+        options_html = f"""
+        <div class="options-box">
+            <div class="options-title">🚀 期權異動監測</div>
+            {f'<div class="opt-level high">🔴 高關注</div>{high_html}' if high else ''}
+            {f'<div class="opt-level medium">🟡 中等關注</div>{medium_html}' if medium else ''}
+            {f'<div class="opt-level low">🟢 一般觀察</div>{low_html}' if low else ''}
+        </div>
+        """
+
     cards_html = ""
     if not stocks:
         cards_html = "<p style='color:#A78BFA;'>目前冇符合條件嘅股票</p>"
@@ -217,7 +290,6 @@ def dashboard():
                 "watch": "👀 觀察"
             }
             signal_text = signal_map.get(signal, signal)
-
             company_name = s.get("company_name", "")
             ticker = s.get("ticker", "")
             distance = s.get("distance_to_52w_high", 0)
@@ -275,226 +347,35 @@ def dashboard():
                 margin-bottom: 10px;
                 border: 1px solid #2E1F47;
             }}
-            .index-item {{
-                flex: 1;
-                text-align: center;
-                min-width: 0;
-            }}
+            .index-item {{ flex: 1; text-align: center; min-width: 0; }}
             .index-name {{ font-size: 0.72rem; color: #A78BFA; margin-bottom: 4px; }}
             .index-price {{ font-size: 0.95rem; font-weight: 700; color: #F5F3FF; }}
             .index-pt {{ font-size: 0.8rem; font-weight: 600; margin-top: 3px; }}
             .index-pct {{ font-size: 0.8rem; font-weight: 600; margin-top: 1px; }}
             
-            .card {{
+            .options-box {{
                 background: #1A1229;
                 border-radius: 16px;
                 padding: 16px;
-                margin-bottom: 14px;
+                margin-bottom: 16px;
                 border: 1px solid #2E1F47;
             }}
-            .tier-badge {{
-                display: inline-block;
-                font-size: 0.85rem;
-                padding: 4px 14px;
-                border-radius: 999px;
+            .options-title {{
+                font-size: 1.05rem;
                 font-weight: 700;
-                margin-bottom: 10px;
-            }}
-            .tier-S {{ background: #E63946; color: #FFFFFF; font-weight: 800; }}
-            .tier-A {{ background: #F4A261; color: #1A1229; }}
-            .tier-B {{ background: #2A9D8F; color: white; }}
-            .tier-C {{ background: #E9C46A; color: #1A1229; }}
-            .tier-D {{ background: #457B9D; color: white; }}
-            .ticker-line {{
-                font-size: 1.25rem;
-                font-weight: 700;
+                margin-bottom: 12px;
                 color: #F5F3FF;
             }}
-            .company-name {{
+            .opt-level {{
                 font-size: 0.9rem;
-                color: #A78BFA;
-                margin: 2px 0 10px 0;
+                font-weight: 600;
+                margin: 12px 0 6px 0;
             }}
-            .signal {{
-                font-size: 1.05rem;
-                margin-bottom: 12px;
-                color: #DDD6FE;
-            }}
-            .info {{
-                font-size: 0.9rem;
+            .opt-level.high {{ color: #F87171; }}
+            .opt-level.medium {{ color: #FBBF24; }}
+            .opt-level.low {{ color: #4ADE80; }}
+            .opt-line {{
+                font-size: 0.85rem;
                 color: #C4B5FD;
                 line-height: 1.7;
-            }}
-            .info b {{ color: #F5F3FF; }}
-            .price {{
-                margin-top: 12px;
-                font-size: 0.85rem;
-                color: #A78BFA;
-            }}
-            .tp {{
-                margin-top: 6px;
-                font-size: 0.85rem;
-                color: #A78BFA;
-            }}
-            
-            .settings {{
-                background: #1A1229;
-                border-radius: 16px;
-                padding: 18px;
-                margin-bottom: 20px;
-                border: 1px solid #2E1F47;
-            }}
-            label {{ display: block; margin: 12px 0 6px; color: #A78BFA; font-size: 0.9rem; }}
-            input[type=number] {{
-                width: 100%;
-                padding: 12px 14px;
-                border-radius: 12px;
-                border: 1px solid #2E1F47;
-                background: #120C1F;
-                color: #F5F3FF;
-                font-size: 1rem;
-            }}
-            .checkbox-row {{
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                margin: 14px 0;
-            }}
-            .checkbox-row label {{ margin: 0; color: #DDD6FE; }}
-            button {{
-                width: 100%;
-                padding: 14px;
-                border: none;
-                border-radius: 12px;
-                font-size: 1rem;
-                font-weight: 600;
-                margin-top: 12px;
-                cursor: pointer;
-            }}
-            .btn-primary {{ background: #8B5CF6; color: white; }}
-            .btn-scan {{ background: #7C3AED; color: white; }}
-            .scan-tip {{
-                text-align: center;
-                color: #A78BFA;
-                font-size: 0.85rem;
-                margin-top: 8px;
-            }}
-            #status {{
-                text-align: center;
-                padding: 8px;
-                border-radius: 8px;
-                margin-bottom: 12px;
-                font-size: 0.9rem;
-                display: none;
-            }}
-            #status.scanning {{
-                display: block;
-                background: #2E1F47;
-                color: #C4B5FD;
-            }}
-            #status.done {{
-                display: block;
-                background: #14532D;
-                color: #86EFAC;
-            }}
-        </style>
-    </head>
-    <body>
-        <h1>QuantFlow 掃描結果</h1>
-        <div class="meta">
-            最新掃描時間：{scan_time}<br>
-            符合條件：{count} 隻股票
-        </div>
-
-        <div id="status"></div>
-
-        <div class="index-row">
-            {us_html}
-        </div>
-        <div class="index-row">
-            {hsi_html}
-            {fg_html}
-        </div>
-
-        <div class="settings">
-            <h2>搜尋條件設定</h2>
-            <form method="post" action="/update-config">
-                <label>最低 RS Rating</label>
-                <input type="number" name="min_rs_rating" value="{config.get('min_rs_rating', 80)}" min="0" max="99">
-
-                <div class="checkbox-row">
-                    <input type="checkbox" name="require_trend_ok" value="true" {"checked" if config.get("require_trend_ok") else ""}>
-                    <label>必須多頭排列</label>
-                </div>
-
-                <div class="checkbox-row">
-                    <input type="checkbox" name="require_macd_bullish" value="true" {"checked" if config.get("require_macd_bullish") else ""}>
-                    <label>必須 MACD 偏多</label>
-                </div>
-
-                <button type="submit" class="btn-primary">儲存設定</button>
-            </form>
-
-            <form method="post" action="/run-scan" style="margin-top:8px;" id="scan-form">
-                <button type="submit" class="btn-scan" id="scan-btn">立即執行掃描</button>
-            </form>
-            <div class="scan-tip">掃描會在背景執行，完成後自動刷新結果</div>
-        </div>
-
-        <h2>掃描結果</h2>
-        {cards_html}
-
-        <script>
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${{protocol}}//${{window.location.host}}/ws`);
-            const statusEl = document.getElementById('status');
-            const scanBtn = document.getElementById('scan-btn');
-
-            ws.onmessage = function(event) {{
-                const data = JSON.parse(event.data);
-                if (data.type === 'scan_complete') {{
-                    statusEl.className = 'done';
-                    statusEl.textContent = '✅ 掃描完成，正在刷新...';
-                    setTimeout(() => location.reload(), 800);
-                }} else if (data.type === 'scan_error') {{
-                    statusEl.className = 'done';
-                    statusEl.textContent = '❌ 掃描出錯：' + (data.message || '');
-                }}
-            }};
-
-            document.getElementById('scan-form').addEventListener('submit', function() {{
-                statusEl.className = 'scanning';
-                statusEl.textContent = '⏳ 掃描進行中，請稍候...';
-                scanBtn.disabled = true;
-                scanBtn.textContent = '掃描中...';
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
-
-
-@app.post("/update-config")
-async def update_config(
-    min_rs_rating: int = Form(...),
-    require_trend_ok: str = Form(None),
-    require_macd_bullish: str = Form(None)
-):
-    config = load_config()
-    config["min_rs_rating"] = min_rs_rating
-    config["require_trend_ok"] = require_trend_ok == "true"
-    config["require_macd_bullish"] = require_macd_bullish == "true"
-    save_config(config)
-    return RedirectResponse(url="/", status_code=303)
-
-
-@app.post("/run-scan")
-async def run_scan(background_tasks: BackgroundTasks):
-    background_tasks.add_task(run_scan_background)
-    return RedirectResponse(url="/", status_code=303)
-
-
-@app.get("/api/latest")
-def api_latest():
-    return load_latest_scan()
+                padding-left: 4px
