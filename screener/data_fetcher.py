@@ -1,23 +1,20 @@
 import yfinance as yf
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from screener.common import get_logger
 
 logger = get_logger(__name__)
 
 
 def calculate_rsi(series, period: int = 14) -> float:
-    """
-    使用 Wilder's Smoothing 計算 RSI（更接近標準平台）
-    """
+    """使用 Wilder's Smoothing 計算 RSI"""
     try:
         delta = series.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
 
-        # 第一個平均值用 SMA
         avg_gain = gain.rolling(window=period, min_periods=period).mean()
         avg_loss = loss.rolling(window=period, min_periods=period).mean()
 
-        # 之後用 Wilder's Smoothing
         for i in range(period, len(series)):
             avg_gain.iloc[i] = (avg_gain.iloc[i - 1] * (period - 1) + gain.iloc[i]) / period
             avg_loss.iloc[i] = (avg_loss.iloc[i - 1] * (period - 1) + loss.iloc[i]) / period
@@ -92,7 +89,6 @@ def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
             logger.warning(f"{ticker} 數據不足，跳過")
             return None
 
-        # 公司名稱
         try:
             info = stock.info
             company_name = info.get("shortName") or info.get("longName") or ticker
@@ -105,11 +101,9 @@ def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
         ma50 = round(float(close.rolling(50).mean().iloc[-1]), 2)
         rsi = calculate_rsi(close)
 
-        # 52 週新高
         high_52w = float(close.max())
         distance_to_52w_high = round((current_price / high_52w - 1) * 100, 1)
 
-        # MACD
         exp12 = close.ewm(span=12, adjust=False).mean()
         exp26 = close.ewm(span=26, adjust=False).mean()
         macd_line = exp12 - exp26
@@ -140,7 +134,6 @@ def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
         if qqq_hist is not None:
             rs_rating = calculate_rs_rating(hist, qqq_hist)
 
-        # 訊號判斷
         if trend_ok and macd_status in ["golden_cross", "bullish_momentum"] and rs_rating >= 80:
             signal_type = "strong_buy"
         elif trend_ok and rs_rating >= 75:
@@ -148,7 +141,6 @@ def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
         else:
             signal_type = "watch"
 
-        # Tier
         if rs_rating >= 90 and trend_ok and macd_status in ["golden_cross", "bullish_momentum"]:
             tier = "S"
         elif rs_rating >= 85 and trend_ok:
@@ -204,8 +196,19 @@ def fetch_multiple_stocks(tickers: list) -> list:
         qqq_hist = None
 
     results = []
-    for ticker in tickers:
-        data = fetch_stock_data(ticker, qqq_hist)
-        if data:
-            results.append(data)
+
+    def fetch_one(ticker):
+        return fetch_stock_data(ticker, qqq_hist)
+
+    # 並行獲取，最多同時 8 個線程
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_ticker = {executor.submit(fetch_one, t): t for t in tickers}
+        for future in as_completed(future_to_ticker):
+            try:
+                data = future.result()
+                if data:
+                    results.append(data)
+            except Exception as e:
+                logger.error(f"並行獲取失敗: {e}")
+
     return results
