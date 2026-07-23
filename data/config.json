@@ -3,10 +3,20 @@
   "require_trend_ok": true,
   "require_macd_bullish": true,
   "tickers": [
-    "AAPL", "NVDA", "MSFT", "AMZN", "META",
-    "GOOGL", "TSLA", "AMD", "AVGO", "CRM",
-    "NFLX", "COST", "ADBE", "PEP", "LLY",
-    "V", "MA", "JPM", "XOM", "UNH",
-    "HD", "PG", "KO", "WMT", "ORCL"
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA", "AVGO", "ORCL",
+    "CRM", "ADBE", "AMD", "QCOM", "TXN", "AMAT", "INTU", "NOW", "PANW", "CRWD",
+    "SNOW", "PLTR", "AI", "PATH", "DDOG", "NET", "ZS", "OKTA", "TEAM", "WDAY",
+    "MU", "WDC", "STX", "LRCX", "KLAC", "ENTG", "ONTO", "ACLS", "FORM", "UCTT",
+    "GLW", "COHR", "LITE", "AAOI", "VIAV", "CIEN", "JNPR", "ANET", "CSCO", "A",
+    "NBIS", "IREN", "CIFR", "WULF", "HUT", "BITF", "CLSK", "VRT", "DLR", "EQIX", "SMCI",
+    "JPM", "BAC", "WFC", "C", "GS", "MS", "BLK", "SCHW", "AXP", "V",
+    "MA", "PYPL", "COF", "USB", "PNC", "TFC", "BK", "STT", "DFS", "SYF",
+    "CAT", "DE", "GE", "HON", "UNP", "UPS", "FDX", "LMT", "RTX", "BA",
+    "NOC", "GD", "EMR", "ETN", "PH", "ROK", "DOV", "ITW", "MMM", "CMI",
+    "DAL", "UAL", "AAL", "LUV", "ALK", "JBLU", "SAVE", "ALGT", "SKYW", "CPA",
+    "LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "AMGN", "PFE", "BMY",
+    "XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "HAL",
+    "COST", "WMT", "HD", "LOW", "TGT", "NKE", "SBUX", "MCD", "CMG", "DIS",
+    "NFLX", "CMCSA", "CHTR", "EA", "TTWO", "SPOT", "ROKU", "LYV", "MTCH", "BKNG"
   ]
 }
