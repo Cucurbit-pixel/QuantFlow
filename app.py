@@ -1,25 +1,43 @@
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
 import json
 from pathlib import Path
+import subprocess
+import os
 
 app = FastAPI(title="QuantFlow Dashboard")
 
 
-def load_latest_scan():
-    file_path = Path("data/latest_scan.json")
-    if not file_path.exists():
+def load_config():
+    path = Path("data/config.json")
+    if not path.exists():
         return {
-            "scan_time": "尚未有掃描記錄",
-            "count": 0,
-            "stocks": []
+            "min_rs_rating": 80,
+            "require_trend_ok": True,
+            "require_macd_bullish": True,
+            "tickers": []
         }
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_config(config: dict):
+    Path("data").mkdir(exist_ok=True)
+    with open("data/config.json", "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def load_latest_scan():
+    path = Path("data/latest_scan.json")
+    if not path.exists():
+        return {"scan_time": "尚未有掃描記錄", "count": 0, "stocks": []}
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
+    config = load_config()
     data = load_latest_scan()
     stocks = data.get("stocks", [])
     scan_time = data.get("scan_time", "未知")
@@ -38,12 +56,8 @@ def dashboard():
                 "watch": "👀 觀察"
             }
             signal_text = signal_map.get(signal, signal)
-            
             distance = s.get("distance_to_52w_high", 0)
-            if distance >= 0:
-                distance_text = f"已創新高 (+{distance}%)"
-            else:
-                distance_text = f"{distance}%"
+            distance_text = f"已創新高 (+{distance}%)" if distance >= 0 else f"{distance}%"
 
             cards_html += f"""
             <div class="card">
@@ -81,15 +95,9 @@ def dashboard():
                 margin: 0;
                 padding: 16px;
             }}
-            h1 {{
-                font-size: 1.5rem;
-                margin-bottom: 4px;
-            }}
-            .meta {{
-                color: #888;
-                font-size: 0.9rem;
-                margin-bottom: 20px;
-            }}
+            h1 {{ font-size: 1.5rem; margin-bottom: 4px; }}
+            h2 {{ font-size: 1.1rem; margin-top: 24px; color: #ccc; }}
+            .meta {{ color: #888; font-size: 0.9rem; margin-bottom: 16px; }}
             .card {{
                 background: #1c1c1e;
                 border-radius: 12px;
@@ -103,10 +111,7 @@ def dashboard():
                 align-items: center;
                 margin-bottom: 8px;
             }}
-            .ticker {{
-                font-size: 1.3rem;
-                font-weight: 700;
-            }}
+            .ticker {{ font-size: 1.3rem; font-weight: 700; }}
             .tier {{
                 font-size: 0.85rem;
                 padding: 2px 8px;
@@ -116,20 +121,45 @@ def dashboard():
             .tier-S {{ background: #e63946; }}
             .tier-A {{ background: #f4a261; color: #000; }}
             .tier-B {{ background: #2a9d8f; }}
-            .signal {{
-                font-size: 1.1rem;
-                margin-bottom: 10px;
+            .signal {{ font-size: 1.1rem; margin-bottom: 10px; }}
+            .info {{ font-size: 0.9rem; color: #ccc; line-height: 1.6; }}
+            .price {{ margin-top: 10px; font-size: 0.85rem; color: #aaa; }}
+            .settings {{
+                background: #1c1c1e;
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 20px;
             }}
-            .info {{
-                font-size: 0.9rem;
-                color: #ccc;
-                line-height: 1.6;
+            label {{ display: block; margin: 10px 0 4px; color: #aaa; font-size: 0.9rem; }}
+            input[type=number], input[type=text] {{
+                width: 100%;
+                padding: 10px;
+                border-radius: 8px;
+                border: 1px solid #333;
+                background: #111;
+                color: #eee;
+                font-size: 1rem;
+                box-sizing: border-box;
             }}
-            .price {{
-                margin-top: 10px;
-                font-size: 0.85rem;
-                color: #aaa;
+            .checkbox-row {{
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin: 12px 0;
             }}
+            button {{
+                width: 100%;
+                padding: 14px;
+                border: none;
+                border-radius: 10px;
+                font-size: 1rem;
+                font-weight: 600;
+                margin-top: 12px;
+                cursor: pointer;
+            }}
+            .btn-primary {{ background: #3b82f6; color: white; }}
+            .btn-scan {{ background: #10b981; color: white; }}
+            .btn-secondary {{ background: #333; color: #eee; }}
         </style>
     </head>
     <body>
@@ -138,6 +168,32 @@ def dashboard():
             最新掃描時間：{scan_time}<br>
             符合條件：{count} 隻股票
         </div>
+
+        <div class="settings">
+            <h2>搜尋條件設定</h2>
+            <form method="post" action="/update-config">
+                <label>最低 RS Rating</label>
+                <input type="number" name="min_rs_rating" value="{config.get('min_rs_rating', 80)}" min="0" max="99">
+
+                <div class="checkbox-row">
+                    <input type="checkbox" name="require_trend_ok" value="true" {"checked" if config.get("require_trend_ok") else ""}>
+                    <label style="margin:0">必須多頭排列</label>
+                </div>
+
+                <div class="checkbox-row">
+                    <input type="checkbox" name="require_macd_bullish" value="true" {"checked" if config.get("require_macd_bullish") else ""}>
+                    <label style="margin:0">必須 MACD 偏多</label>
+                </div>
+
+                <button type="submit" class="btn-primary">儲存設定</button>
+            </form>
+
+            <form method="post" action="/run-scan" style="margin-top:12px;">
+                <button type="submit" class="btn-scan">立即執行掃描</button>
+            </form>
+        </div>
+
+        <h2>掃描結果</h2>
         {cards_html}
     </body>
     </html>
@@ -145,7 +201,31 @@ def dashboard():
     return HTMLResponse(content=html)
 
 
+@app.post("/update-config")
+async def update_config(
+    min_rs_rating: int = Form(...),
+    require_trend_ok: str = Form(None),
+    require_macd_bullish: str = Form(None)
+):
+    config = load_config()
+    config["min_rs_rating"] = min_rs_rating
+    config["require_trend_ok"] = require_trend_ok == "true"
+    config["require_macd_bullish"] = require_macd_bullish == "true"
+    save_config(config)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/run-scan")
+async def run_scan():
+    try:
+        # 在背景執行掃描
+        from screener.merge import run_full_scan
+        run_full_scan()
+    except Exception as e:
+        print(f"掃描錯誤: {e}")
+    return RedirectResponse(url="/", status_code=303)
+
+
 @app.get("/api/latest")
 def api_latest():
     return load_latest_scan()
-    
