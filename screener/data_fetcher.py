@@ -5,12 +5,32 @@ logger = get_logger(__name__)
 
 
 def calculate_rsi(series, period: int = 14) -> float:
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(float(rsi.iloc[-1]), 1)
+    """
+    使用 Wilder's Smoothing 計算 RSI（更接近標準平台）
+    """
+    try:
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+
+        # 第一個平均值用 SMA
+        avg_gain = gain.rolling(window=period, min_periods=period).mean()
+        avg_loss = loss.rolling(window=period, min_periods=period).mean()
+
+        # 之後用 Wilder's Smoothing
+        for i in range(period, len(series)):
+            avg_gain.iloc[i] = (avg_gain.iloc[i - 1] * (period - 1) + gain.iloc[i]) / period
+            avg_loss.iloc[i] = (avg_loss.iloc[i - 1] * (period - 1) + loss.iloc[i]) / period
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        value = float(rsi.iloc[-1])
+        if value != value:  # NaN check
+            return 50.0
+        return round(value, 1)
+    except Exception:
+        return 50.0
 
 
 def calculate_rs_rating(stock_hist, qqq_hist) -> int:
@@ -40,25 +60,20 @@ def calculate_rs_rating(stock_hist, qqq_hist) -> int:
 
 
 def check_breakout(hist) -> str:
-    """
-    判斷突破是否成立
-    """
     try:
         recent = hist.tail(21)
         close = recent["Close"]
         volume = recent["Volume"]
 
         current_price = close.iloc[-1]
-        high_20 = close.iloc[:-1].max()  # 近 20 日最高（唔計今日）
+        high_20 = close.iloc[:-1].max()
         avg_volume = volume.iloc[:-1].mean()
         today_volume = volume.iloc[-1]
 
-        # 條件：突破 20 日高 + 放量 + 收市企穩
         is_breakout = current_price > high_20
         volume_confirm = today_volume > avg_volume * 1.5
-        hold_above = current_price > high_20
 
-        if is_breakout and volume_confirm and hold_above:
+        if is_breakout and volume_confirm:
             return "✅ 突破成立（放量）"
         elif is_breakout:
             return "⚠️ 突破但量能不足"
@@ -71,11 +86,18 @@ def check_breakout(hist) -> str:
 def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="1y")  # 用 1 年數據計 52 週新高
+        hist = stock.history(period="1y")
 
         if hist.empty or len(hist) < 63:
             logger.warning(f"{ticker} 數據不足，跳過")
             return None
+
+        # 公司名稱
+        try:
+            info = stock.info
+            company_name = info.get("shortName") or info.get("longName") or ticker
+        except Exception:
+            company_name = ticker
 
         close = hist["Close"]
         current_price = round(float(close.iloc[-1]), 2)
@@ -85,7 +107,7 @@ def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
 
         # 52 週新高
         high_52w = float(close.max())
-        distance_to_52w_high = round((current_price / high_52w - 1) * 100, 1)  # 負數代表距離新高有幾多 %
+        distance_to_52w_high = round((current_price / high_52w - 1) * 100, 1)
 
         # MACD
         exp12 = close.ewm(span=12, adjust=False).mean()
@@ -112,20 +134,19 @@ def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
         trend_ok = current_price > ma20 > ma50
         trend = "多頭排列" if trend_ok else "空頭或盤整"
 
-        # 突破是否成立
         breakout_status = check_breakout(hist)
-
-        # 訊號判斷（已移除期權）
-        if trend_ok and macd_status in ["golden_cross", "bullish_momentum"] and calculate_rs_rating(hist, qqq_hist) >= 80:
-            signal_type = "strong_buy"
-        elif trend_ok and calculate_rs_rating(hist, qqq_hist) >= 75:
-            signal_type = "buy"
-        else:
-            signal_type = "watch"
 
         rs_rating = 50
         if qqq_hist is not None:
             rs_rating = calculate_rs_rating(hist, qqq_hist)
+
+        # 訊號判斷
+        if trend_ok and macd_status in ["golden_cross", "bullish_momentum"] and rs_rating >= 80:
+            signal_type = "strong_buy"
+        elif trend_ok and rs_rating >= 75:
+            signal_type = "buy"
+        else:
+            signal_type = "watch"
 
         # Tier
         if rs_rating >= 90 and trend_ok and macd_status in ["golden_cross", "bullish_momentum"]:
@@ -147,6 +168,7 @@ def fetch_stock_data(ticker: str, qqq_hist=None) -> dict | None:
 
         return {
             "ticker": ticker,
+            "company_name": company_name,
             "tier": tier,
             "rs_rating": rs_rating,
             "rsi": rsi,
