@@ -2,6 +2,7 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 import json
 from pathlib import Path
+import yfinance as yf
 
 app = FastAPI(title="QuantFlow Dashboard")
 
@@ -34,12 +35,77 @@ def load_latest_scan():
 
 
 def sort_stocks(stocks: list) -> list:
-    """按 Tier (S→A→B→C→D) 排序，同一 Tier 再按 ticker A-Z"""
     tier_order = {"S": 0, "A": 1, "B": 2, "C": 3, "D": 4}
     return sorted(
         stocks,
         key=lambda x: (tier_order.get(x.get("tier", "D"), 99), x.get("ticker", ""))
     )
+
+
+def get_index_data():
+    symbols = {
+        "S&P 500": "^GSPC",
+        "Nasdaq": "^IXIC",
+        "Dow Jones": "^DJI",
+        "恆生指數": "^HSI"
+    }
+    results = []
+    for name, symbol in symbols.items():
+        try:
+            t = yf.Ticker(symbol)
+            hist = t.history(period="5d")
+            if len(hist) >= 2:
+                current = float(hist["Close"].iloc[-1])
+                prev = float(hist["Close"].iloc[-2])
+                change_pct = (current - prev) / prev * 100
+                results.append({
+                    "name": name,
+                    "price": f"{current:,.2f}",
+                    "change": change_pct,
+                    "change_str": f"{change_pct:+.2f}%"
+                })
+            else:
+                results.append({"name": name, "price": "--", "change": 0, "change_str": "--"})
+        except Exception:
+            results.append({"name": name, "price": "--", "change": 0, "change_str": "--"})
+    return results
+
+
+def get_fear_greed():
+    """用 VIX 粗略估算 Fear & Greed，並回傳等級"""
+    try:
+        vix = yf.Ticker("^VIX")
+        hist = vix.history(period="5d")
+        if not hist.empty:
+            vix_value = float(hist["Close"].iloc[-1])
+            if vix_value < 15:
+                score = 78
+            elif vix_value < 18:
+                score = 68
+            elif vix_value < 22:
+                score = 55
+            elif vix_value < 26:
+                score = 42
+            elif vix_value < 32:
+                score = 28
+            else:
+                score = 15
+
+            if score >= 76:
+                level = "Extreme Greed"
+            elif score >= 56:
+                level = "Greed"
+            elif score >= 45:
+                level = "Neutral"
+            elif score >= 25:
+                level = "Fear"
+            else:
+                level = "Extreme Fear"
+
+            return score, level
+    except Exception:
+        pass
+    return None, None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -50,9 +116,31 @@ def dashboard():
     scan_time = data.get("scan_time", "未知")
     count = data.get("count", 0)
 
+    indices = get_index_data()
+    fg_score, fg_level = get_fear_greed()
+
+    index_html = ""
+    for idx in indices:
+        color = "#22C55E" if idx["change"] > 0 else "#EF4444" if idx["change"] < 0 else "#A78BFA"
+        index_html += f"""
+        <div class="index-item">
+            <div class="index-name">{idx['name']}</div>
+            <div class="index-price">{idx['price']}</div>
+            <div class="index-change" style="color:{color}">{idx['change_str']}</div>
+        </div>
+        """
+
+    if fg_score is not None:
+        fg_display = f"""
+        <div class="index-price" style="color:#EF4444; font-weight:700; font-size:1.25rem;">{fg_score}</div>
+        <div class="index-change" style="color:#F87171; font-size:0.75rem;">{fg_level}</div>
+        """
+    else:
+        fg_display = "<div class='index-price' style='color:#A78BFA;'>--</div>"
+
     cards_html = ""
     if not stocks:
-        cards_html = "<p style='color:#aaa;'>目前冇符合條件嘅股票</p>"
+        cards_html = "<p style='color:#A78BFA;'>目前冇符合條件嘅股票</p>"
     else:
         for s in stocks:
             tier = s.get("tier", "-")
@@ -99,78 +187,109 @@ def dashboard():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>QuantFlow Dashboard</title>
         <style>
+            * {{ box-sizing: border-box; }}
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                background: #0f0f0f;
-                color: #eee;
+                background: #0F0A1A;
+                color: #F5F3FF;
                 margin: 0;
                 padding: 16px;
+                min-height: 100vh;
             }}
-            h1 {{ font-size: 1.5rem; margin-bottom: 4px; }}
-            h2 {{ font-size: 1.1rem; margin-top: 24px; color: #ccc; }}
-            .meta {{ color: #888; font-size: 0.9rem; margin-bottom: 16px; }}
+            h1 {{ font-size: 1.5rem; margin: 0 0 6px 0; font-weight: 700; }}
+            h2 {{ font-size: 1.05rem; margin: 24px 0 12px 0; color: #C4B5FD; }}
+            .meta {{ color: #A78BFA; font-size: 0.9rem; margin-bottom: 16px; }}
+            
+            .index-bar {{
+                display: flex;
+                background: #1A1229;
+                border-radius: 16px;
+                padding: 14px 8px;
+                margin-bottom: 18px;
+                border: 1px solid #2E1F47;
+                overflow-x: auto;
+                gap: 4px;
+            }}
+            .index-item, .fg-item {{
+                flex: 1;
+                text-align: center;
+                min-width: 68px;
+            }}
+            .fg-item {{
+                border-left: 1px solid #2E1F47;
+                padding-left: 6px;
+            }}
+            .index-name {{ font-size: 0.72rem; color: #A78BFA; margin-bottom: 4px; white-space: nowrap; }}
+            .index-price {{ font-size: 0.92rem; font-weight: 700; color: #F5F3FF; }}
+            .index-change {{ font-size: 0.8rem; font-weight: 600; margin-top: 2px; }}
+            
             .card {{
-                background: #1c1c1e;
-                border-radius: 12px;
+                background: #1A1229;
+                border-radius: 16px;
                 padding: 16px;
                 margin-bottom: 14px;
-                border-left: 4px solid #333;
+                border: 1px solid #2E1F47;
             }}
             .card-header {{
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                margin-bottom: 8px;
+                margin-bottom: 10px;
+                gap: 8px;
             }}
-            .ticker {{ font-size: 1.15rem; font-weight: 700; }}
+            .ticker {{ font-size: 1.1rem; font-weight: 700; }}
             .tier {{
-                font-size: 0.85rem;
-                padding: 2px 8px;
-                border-radius: 6px;
-                background: #333;
+                font-size: 0.8rem;
+                padding: 3px 10px;
+                border-radius: 999px;
+                font-weight: 600;
             }}
-            .tier-S {{ background: #e63946; }}
-            .tier-A {{ background: #f4a261; color: #000; }}
-            .tier-B {{ background: #2a9d8f; }}
-            .tier-C {{ background: #e9c46a; color: #000; }}
-            .signal {{ font-size: 1.1rem; margin-bottom: 10px; }}
-            .info {{ font-size: 0.9rem; color: #ccc; line-height: 1.6; }}
-            .price {{ margin-top: 10px; font-size: 0.85rem; color: #aaa; }}
+            .tier-S {{ background: #E63946; color: white; }}
+            .tier-A {{ background: #F4A261; color: #1A1229; }}
+            .tier-B {{ background: #2A9D8F; color: white; }}
+            .tier-C {{ background: #E9C46A; color: #1A1229; }}
+            .tier-D {{ background: #457B9D; color: white; }}
+            .signal {{ font-size: 1.05rem; margin-bottom: 12px; color: #DDD6FE; }}
+            .info {{ font-size: 0.9rem; color: #C4B5FD; line-height: 1.7; }}
+            .info b {{ color: #F5F3FF; }}
+            .price {{ margin-top: 12px; font-size: 0.85rem; color: #A78BFA; }}
+            
             .settings {{
-                background: #1c1c1e;
-                border-radius: 12px;
-                padding: 16px;
+                background: #1A1229;
+                border-radius: 16px;
+                padding: 18px;
                 margin-bottom: 20px;
+                border: 1px solid #2E1F47;
             }}
-            label {{ display: block; margin: 10px 0 4px; color: #aaa; font-size: 0.9rem; }}
+            label {{ display: block; margin: 12px 0 6px; color: #A78BFA; font-size: 0.9rem; }}
             input[type=number] {{
                 width: 100%;
-                padding: 10px;
-                border-radius: 8px;
-                border: 1px solid #333;
-                background: #111;
-                color: #eee;
+                padding: 12px 14px;
+                border-radius: 12px;
+                border: 1px solid #2E1F47;
+                background: #120C1F;
+                color: #F5F3FF;
                 font-size: 1rem;
-                box-sizing: border-box;
             }}
             .checkbox-row {{
                 display: flex;
                 align-items: center;
-                gap: 8px;
-                margin: 12px 0;
+                gap: 10px;
+                margin: 14px 0;
             }}
+            .checkbox-row label {{ margin: 0; color: #DDD6FE; }}
             button {{
                 width: 100%;
                 padding: 14px;
                 border: none;
-                border-radius: 10px;
+                border-radius: 12px;
                 font-size: 1rem;
                 font-weight: 600;
                 margin-top: 12px;
                 cursor: pointer;
             }}
-            .btn-primary {{ background: #3b82f6; color: white; }}
-            .btn-scan {{ background: #10b981; color: white; }}
+            .btn-primary {{ background: #8B5CF6; color: white; }}
+            .btn-scan {{ background: #7C3AED; color: white; }}
         </style>
     </head>
     <body>
@@ -178,6 +297,14 @@ def dashboard():
         <div class="meta">
             最新掃描時間：{scan_time}<br>
             符合條件：{count} 隻股票
+        </div>
+
+        <div class="index-bar">
+            {index_html}
+            <div class="fg-item">
+                <div class="index-name">Fear & Greed</div>
+                {fg_display}
+            </div>
         </div>
 
         <div class="settings">
@@ -188,18 +315,18 @@ def dashboard():
 
                 <div class="checkbox-row">
                     <input type="checkbox" name="require_trend_ok" value="true" {"checked" if config.get("require_trend_ok") else ""}>
-                    <label style="margin:0">必須多頭排列</label>
+                    <label>必須多頭排列</label>
                 </div>
 
                 <div class="checkbox-row">
                     <input type="checkbox" name="require_macd_bullish" value="true" {"checked" if config.get("require_macd_bullish") else ""}>
-                    <label style="margin:0">必須 MACD 偏多</label>
+                    <label>必須 MACD 偏多</label>
                 </div>
 
                 <button type="submit" class="btn-primary">儲存設定</button>
             </form>
 
-            <form method="post" action="/run-scan" style="margin-top:12px;">
+            <form method="post" action="/run-scan" style="margin-top:8px;">
                 <button type="submit" class="btn-scan">立即執行掃描</button>
             </form>
         </div>
