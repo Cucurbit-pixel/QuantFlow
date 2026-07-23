@@ -130,25 +130,28 @@ def get_fear_greed():
 
 
 def get_options_alerts():
-    """獲取期權異動（真實 Vol/OI 掃描）"""
+    """只讀快取，唔喺頁面載入時掃描（加快速度）"""
     try:
-        from screener.options_scanner import scan_options_unusual
-        alerts = scan_options_unusual(
-            min_vol=200,
-            min_vol_oi=2.0,
-            max_results=12
-        )
-        return alerts
+        from screener.options_scanner import load_options_cache
+        return load_options_cache()
     except Exception as e:
-        print(f"期權掃描錯誤: {e}")
+        print(f"讀取期權快取錯誤: {e}")
         return []
 
 
 def run_scan_background():
+    """背景執行：股票掃描 + 期權掃描"""
     try:
         from screener.merge import run_full_scan
+        from screener.options_scanner import get_or_scan_options
+
         run_full_scan()
-        print("✅ 背景掃描完成")
+        print("✅ 股票掃描完成")
+
+        # 強制重新掃描期權並寫入快取
+        get_or_scan_options(force=True)
+        print("✅ 期權掃描完成")
+
         asyncio.run(broadcast({"type": "scan_complete"}))
     except Exception as e:
         print(f"❌ 背景掃描錯誤: {e}")
@@ -214,7 +217,6 @@ def dashboard():
         </div>
         """
 
-    # 期權異動區塊（有數據先顯示）
     options_html = ""
     if options_alerts:
         high = [a for a in options_alerts if a["level"] == "high"]
@@ -472,7 +474,7 @@ def dashboard():
             <form method="post" action="/run-scan" style="margin-top:8px;" id="scan-form">
                 <button type="submit" class="btn-scan" id="scan-btn">立即執行掃描</button>
             </form>
-            <div class="scan-tip">掃描會在背景執行，完成後自動刷新結果</div>
+            <div class="scan-tip">掃描會在背景執行（股票 + 期權），完成後自動刷新</div>
         </div>
 
         <h2>掃描結果</h2>
@@ -498,7 +500,7 @@ def dashboard():
 
             document.getElementById('scan-form').addEventListener('submit', function() {{
                 statusEl.className = 'scanning';
-                statusEl.textContent = '⏳ 掃描進行中，請稍候...';
+                statusEl.textContent = '⏳ 掃描進行中（股票 + 期權），請稍候...';
                 scanBtn.disabled = true;
                 scanBtn.textContent = '掃描中...';
             }});
