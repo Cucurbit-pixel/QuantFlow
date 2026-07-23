@@ -117,7 +117,6 @@ def get_fear_greed():
 
 
 def run_scan_background():
-    """背景執行掃描"""
     try:
         from screener.merge import run_full_scan
         run_full_scan()
@@ -190,28 +189,29 @@ def dashboard():
             signal_text = signal_map.get(signal, signal)
 
             company_name = s.get("company_name", "")
-            display_name = f"{s.get('ticker')} ({company_name})" if company_name and company_name != s.get("ticker") else s.get("ticker")
-
+            ticker = s.get("ticker", "")
             distance = s.get("distance_to_52w_high", 0)
             distance_text = f"已創新高 (+{distance}%)" if distance >= 0 else f"{distance}%"
 
             cards_html += f"""
             <div class="card">
-                <div class="card-header">
-                    <span class="ticker">{display_name}</span>
-                    <span class="tier tier-{tier}">Tier {tier}</span>
-                </div>
+                <div class="tier-badge tier-{tier}">Tier {tier}</div>
+                <div class="ticker-line">📊 {ticker}</div>
+                <div class="company-name">({company_name})</div>
                 <div class="signal">{signal_text}</div>
                 <div class="info">
                     <div>RS Rating：<b>{s.get('rs_rating')}</b></div>
                     <div>RSI：{s.get('rsi')}</div>
                     <div>MACD：{s.get('macd_status')}</div>
                     <div>趨勢：{s.get('trend')}</div>
-                    <div>距離 52 週新高：{distance_text}</div>
+                    <div>距離52週新高：{distance_text}</div>
                     <div>突破：{s.get('breakout_status')}</div>
                 </div>
                 <div class="price">
                     現價：${s.get('close')} | 入場：${s.get('entry')} | 止損：${s.get('stop_loss')}
+                </div>
+                <div class="tp">
+                    止盈1：${s.get('tp1')} | 止盈2：${s.get('tp2')} | 止盈3：${s.get('tp3')}
                 </div>
             </div>
             """
@@ -262,29 +262,50 @@ def dashboard():
                 margin-bottom: 14px;
                 border: 1px solid #2E1F47;
             }}
-            .card-header {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 10px;
-                gap: 8px;
-            }}
-            .ticker {{ font-size: 1.1rem; font-weight: 700; }}
-            .tier {{
-                font-size: 0.8rem;
-                padding: 3px 10px;
+            .tier-badge {{
+                display: inline-block;
+                font-size: 0.85rem;
+                padding: 4px 14px;
                 border-radius: 999px;
-                font-weight: 600;
+                font-weight: 700;
+                margin-bottom: 10px;
             }}
-            .tier-S {{ background: #E63946; color: white; }}
+            .tier-S {{ background: #E63946; color: #FFFFFF; font-weight: 800; }}
             .tier-A {{ background: #F4A261; color: #1A1229; }}
             .tier-B {{ background: #2A9D8F; color: white; }}
             .tier-C {{ background: #E9C46A; color: #1A1229; }}
             .tier-D {{ background: #457B9D; color: white; }}
-            .signal {{ font-size: 1.05rem; margin-bottom: 12px; color: #DDD6FE; }}
-            .info {{ font-size: 0.9rem; color: #C4B5FD; line-height: 1.7; }}
+            .ticker-line {{
+                font-size: 1.25rem;
+                font-weight: 700;
+                color: #F5F3FF;
+            }}
+            .company-name {{
+                font-size: 0.9rem;
+                color: #A78BFA;
+                margin: 2px 0 10px 0;
+            }}
+            .signal {{
+                font-size: 1.05rem;
+                margin-bottom: 12px;
+                color: #DDD6FE;
+            }}
+            .info {{
+                font-size: 0.9rem;
+                color: #C4B5FD;
+                line-height: 1.7;
+            }}
             .info b {{ color: #F5F3FF; }}
-            .price {{ margin-top: 12px; font-size: 0.85rem; color: #A78BFA; }}
+            .price {{
+                margin-top: 12px;
+                font-size: 0.85rem;
+                color: #A78BFA;
+            }}
+            .tp {{
+                margin-top: 6px;
+                font-size: 0.85rem;
+                color: #A78BFA;
+            }}
             
             .settings {{
                 background: #1A1229;
