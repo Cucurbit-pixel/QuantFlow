@@ -1,10 +1,24 @@
-from fastapi import FastAPI, Form, BackgroundTasks
+from fastapi import FastAPI, Form, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 import json
 from pathlib import Path
 import yfinance as yf
+import asyncio
+from typing import List
 
 app = FastAPI(title="QuantFlow Dashboard")
+
+# 儲存所有 WebSocket 連線
+active_connections: List[WebSocket] = []
+
+
+async def broadcast(message: dict):
+    """向所有連線的客戶端廣播訊息"""
+    for connection in active_connections[:]:
+        try:
+            await connection.send_json(message)
+        except Exception:
+            active_connections.remove(connection)
 
 
 def load_config():
@@ -117,12 +131,28 @@ def get_fear_greed():
 
 
 def run_scan_background():
+    """背景執行掃描，完成後透過 WebSocket 通知"""
     try:
         from screener.merge import run_full_scan
         run_full_scan()
         print("✅ 背景掃描完成")
+        # 通知所有連線的客戶端
+        asyncio.run(broadcast({"type": "scan_complete"}))
     except Exception as e:
         print(f"❌ 背景掃描錯誤: {e}")
+        asyncio.run(broadcast({"type": "scan_error", "message": str(e)}))
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    active_connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -349,6 +379,24 @@ def dashboard():
                 font-size: 0.85rem;
                 margin-top: 8px;
             }}
+            #status {{
+                text-align: center;
+                padding: 8px;
+                border-radius: 8px;
+                margin-bottom: 12px;
+                font-size: 0.9rem;
+                display: none;
+            }}
+            #status.scanning {{
+                display: block;
+                background: #2E1F47;
+                color: #C4B5FD;
+            }}
+            #status.done {{
+                display: block;
+                background: #14532D;
+                color: #86EFAC;
+            }}
         </style>
     </head>
     <body>
@@ -357,6 +405,8 @@ def dashboard():
             最新掃描時間：{scan_time}<br>
             符合條件：{count} 隻股票
         </div>
+
+        <div id="status"></div>
 
         <div class="index-row">
             {us_html}
@@ -385,14 +435,40 @@ def dashboard():
                 <button type="submit" class="btn-primary">儲存設定</button>
             </form>
 
-            <form method="post" action="/run-scan" style="margin-top:8px;">
-                <button type="submit" class="btn-scan">立即執行掃描</button>
+            <form method="post" action="/run-scan" style="margin-top:8px;" id="scan-form">
+                <button type="submit" class="btn-scan" id="scan-btn">立即執行掃描</button>
             </form>
-            <div class="scan-tip">掃描會在背景執行，約 1–3 分鐘後刷新頁面查看結果</div>
+            <div class="scan-tip">掃描會在背景執行，完成後自動刷新結果</div>
         </div>
 
         <h2>掃描結果</h2>
         {cards_html}
+
+        <script>
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${{protocol}}//${{window.location.host}}/ws`);
+            const statusEl = document.getElementById('status');
+            const scanBtn = document.getElementById('scan-btn');
+
+            ws.onmessage = function(event) {{
+                const data = JSON.parse(event.data);
+                if (data.type === 'scan_complete') {{
+                    statusEl.className = 'done';
+                    statusEl.textContent = '✅ 掃描完成，正在刷新...';
+                    setTimeout(() => location.reload(), 800);
+                }} else if (data.type === 'scan_error') {{
+                    statusEl.className = 'done';
+                    statusEl.textContent = '❌ 掃描出錯：' + (data.message || '');
+                }}
+            }};
+
+            document.getElementById('scan-form').addEventListener('submit', function() {{
+                statusEl.className = 'scanning';
+                statusEl.textContent = '⏳ 掃描進行中，請稍候...';
+                scanBtn.disabled = true;
+                scanBtn.textContent = '掃描中...';
+            }});
+        </script>
     </body>
     </html>
     """
