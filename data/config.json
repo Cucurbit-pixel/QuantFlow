@@ -1,0 +1,12 @@
+{
+  "min_rs_rating": 80,
+  "require_trend_ok": true,
+  "require_macd_bullish": true,
+  "tickers": [
+    "AAPL", "NVDA", "MSFT", "AMZN", "META",
+    "GOOGL", "TSLA", "AMD", "AVGO", "CRM",
+    "NFLX", "COST", "ADBE", "PEP", "LLY",
+    "V", "MA", "JPM", "XOM", "UNH",
+    "HD", "PG", "KO", "WMT", "ORCL"
+  ]
+}
