@@ -378,4 +378,197 @@ def dashboard():
                 font-size: 0.85rem;
                 color: #C4B5FD;
                 line-height: 1.7;
-                padding-left: 4px
+                padding-left: 4px;
+            }}
+            
+            .card {{
+                background: #1A1229;
+                border-radius: 16px;
+                padding: 16px;
+                margin-bottom: 14px;
+                border: 1px solid #2E1F47;
+            }}
+            .tier-badge {{
+                display: inline-block;
+                font-size: 0.85rem;
+                padding: 4px 14px;
+                border-radius: 999px;
+                font-weight: 700;
+                margin-bottom: 10px;
+            }}
+            .tier-S {{ background: #E63946; color: #FFFFFF; font-weight: 800; }}
+            .tier-A {{ background: #F4A261; color: #1A1229; }}
+            .tier-B {{ background: #2A9D8F; color: white; }}
+            .tier-C {{ background: #E9C46A; color: #1A1229; }}
+            .tier-D {{ background: #457B9D; color: white; }}
+            .ticker-line {{ font-size: 1.25rem; font-weight: 700; color: #F5F3FF; }}
+            .company-name {{ font-size: 0.9rem; color: #A78BFA; margin: 2px 0 10px 0; }}
+            .signal {{ font-size: 1.05rem; margin-bottom: 12px; color: #DDD6FE; }}
+            .info {{ font-size: 0.9rem; color: #C4B5FD; line-height: 1.7; }}
+            .info b {{ color: #F5F3FF; }}
+            .price {{ margin-top: 12px; font-size: 0.85rem; color: #A78BFA; }}
+            .tp {{ margin-top: 6px; font-size: 0.85rem; color: #A78BFA; }}
+            
+            .settings {{
+                background: #1A1229;
+                border-radius: 16px;
+                padding: 18px;
+                margin-bottom: 20px;
+                border: 1px solid #2E1F47;
+            }}
+            label {{ display: block; margin: 12px 0 6px; color: #A78BFA; font-size: 0.9rem; }}
+            input[type=number] {{
+                width: 100%;
+                padding: 12px 14px;
+                border-radius: 12px;
+                border: 1px solid #2E1F47;
+                background: #120C1F;
+                color: #F5F3FF;
+                font-size: 1rem;
+            }}
+            .checkbox-row {{
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin: 14px 0;
+            }}
+            .checkbox-row label {{ margin: 0; color: #DDD6FE; }}
+            button {{
+                width: 100%;
+                padding: 14px;
+                border: none;
+                border-radius: 12px;
+                font-size: 1rem;
+                font-weight: 600;
+                margin-top: 12px;
+                cursor: pointer;
+            }}
+            .btn-primary {{ background: #8B5CF6; color: white; }}
+            .btn-scan {{ background: #7C3AED; color: white; }}
+            .scan-tip {{
+                text-align: center;
+                color: #A78BFA;
+                font-size: 0.85rem;
+                margin-top: 8px;
+            }}
+            #status {{
+                text-align: center;
+                padding: 8px;
+                border-radius: 8px;
+                margin-bottom: 12px;
+                font-size: 0.9rem;
+                display: none;
+            }}
+            #status.scanning {{
+                display: block;
+                background: #2E1F47;
+                color: #C4B5FD;
+            }}
+            #status.done {{
+                display: block;
+                background: #14532D;
+                color: #86EFAC;
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>QuantFlow 掃描結果</h1>
+        <div class="meta">
+            最新掃描時間：{scan_time}<br>
+            符合條件：{count} 隻股票
+        </div>
+
+        <div id="status"></div>
+
+        <div class="index-row">
+            {us_html}
+        </div>
+        <div class="index-row">
+            {hsi_html}
+            {fg_html}
+        </div>
+
+        {options_html}
+
+        <div class="settings">
+            <h2>搜尋條件設定</h2>
+            <form method="post" action="/update-config">
+                <label>最低 RS Rating</label>
+                <input type="number" name="min_rs_rating" value="{config.get('min_rs_rating', 80)}" min="0" max="99">
+
+                <div class="checkbox-row">
+                    <input type="checkbox" name="require_trend_ok" value="true" {"checked" if config.get("require_trend_ok") else ""}>
+                    <label>必須多頭排列</label>
+                </div>
+
+                <div class="checkbox-row">
+                    <input type="checkbox" name="require_macd_bullish" value="true" {"checked" if config.get("require_macd_bullish") else ""}>
+                    <label>必須 MACD 偏多</label>
+                </div>
+
+                <button type="submit" class="btn-primary">儲存設定</button>
+            </form>
+
+            <form method="post" action="/run-scan" style="margin-top:8px;" id="scan-form">
+                <button type="submit" class="btn-scan" id="scan-btn">立即執行掃描</button>
+            </form>
+            <div class="scan-tip">掃描會在背景執行，完成後自動刷新結果</div>
+        </div>
+
+        <h2>掃描結果</h2>
+        {cards_html}
+
+        <script>
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${{protocol}}//${{window.location.host}}/ws`);
+            const statusEl = document.getElementById('status');
+            const scanBtn = document.getElementById('scan-btn');
+
+            ws.onmessage = function(event) {{
+                const data = JSON.parse(event.data);
+                if (data.type === 'scan_complete') {{
+                    statusEl.className = 'done';
+                    statusEl.textContent = '✅ 掃描完成，正在刷新...';
+                    setTimeout(() => location.reload(), 800);
+                }} else if (data.type === 'scan_error') {{
+                    statusEl.className = 'done';
+                    statusEl.textContent = '❌ 掃描出錯：' + (data.message || '');
+                }}
+            }};
+
+            document.getElementById('scan-form').addEventListener('submit', function() {{
+                statusEl.className = 'scanning';
+                statusEl.textContent = '⏳ 掃描進行中，請稍候...';
+                scanBtn.disabled = true;
+                scanBtn.textContent = '掃描中...';
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+@app.post("/update-config")
+async def update_config(
+    min_rs_rating: int = Form(...),
+    require_trend_ok: str = Form(None),
+    require_macd_bullish: str = Form(None)
+):
+    config = load_config()
+    config["min_rs_rating"] = min_rs_rating
+    config["require_trend_ok"] = require_trend_ok == "true"
+    config["require_macd_bullish"] = require_macd_bullish == "true"
+    save_config(config)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/run-scan")
+async def run_scan(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_scan_background)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.get("/api/latest")
+def api_latest():
+    return load_latest_scan()
