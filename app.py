@@ -57,22 +57,30 @@ def get_index_data():
             if len(hist) >= 2:
                 current = float(hist["Close"].iloc[-1])
                 prev = float(hist["Close"].iloc[-2])
-                change_pct = (current - prev) / prev * 100
+                change_pt = current - prev
+                change_pct = (change_pt / prev) * 100
                 results.append({
                     "name": name,
                     "price": f"{current:,.2f}",
-                    "change": change_pct,
-                    "change_str": f"{change_pct:+.2f}%"
+                    "change_pt": change_pt,
+                    "change_pt_str": f"{change_pt:+,.2f}",
+                    "change_pct": change_pct,
+                    "change_pct_str": f"{change_pct:+.2f}%"
                 })
             else:
-                results.append({"name": name, "price": "--", "change": 0, "change_str": "--"})
+                results.append({
+                    "name": name, "price": "--", "change_pt": 0,
+                    "change_pt_str": "--", "change_pct": 0, "change_pct_str": "--"
+                })
         except Exception:
-            results.append({"name": name, "price": "--", "change": 0, "change_str": "--"})
+            results.append({
+                "name": name, "price": "--", "change_pt": 0,
+                "change_pt_str": "--", "change_pct": 0, "change_pct_str": "--"
+            })
     return results
 
 
 def get_fear_greed():
-    """用 VIX 粗略估算 Fear & Greed，並回傳等級"""
     try:
         vix = yf.Ticker("^VIX")
         hist = vix.history(period="5d")
@@ -92,15 +100,15 @@ def get_fear_greed():
                 score = 15
 
             if score >= 76:
-                level = "Extreme Greed"
+                level = "極度貪婪"
             elif score >= 56:
-                level = "Greed"
+                level = "貪婪"
             elif score >= 45:
-                level = "Neutral"
+                level = "中性"
             elif score >= 25:
-                level = "Fear"
+                level = "恐懼"
             else:
-                level = "Extreme Fear"
+                level = "極度恐懼"
 
             return score, level
     except Exception:
@@ -117,26 +125,45 @@ def dashboard():
     count = data.get("count", 0)
 
     indices = get_index_data()
+    us_indices = indices[:3]   # S&P, Nasdaq, Dow
+    hsi = indices[3] if len(indices) > 3 else None
     fg_score, fg_level = get_fear_greed()
 
-    index_html = ""
-    for idx in indices:
-        color = "#22C55E" if idx["change"] > 0 else "#EF4444" if idx["change"] < 0 else "#A78BFA"
-        index_html += f"""
+    def render_index_item(idx):
+        color = "#22C55E" if idx["change_pct"] > 0 else "#EF4444" if idx["change_pct"] < 0 else "#A78BFA"
+        return f"""
         <div class="index-item">
             <div class="index-name">{idx['name']}</div>
             <div class="index-price">{idx['price']}</div>
-            <div class="index-change" style="color:{color}">{idx['change_str']}</div>
+            <div class="index-pt" style="color:{color}">{idx['change_pt_str']}</div>
+            <div class="index-pct" style="color:{color}">{idx['change_pct_str']}</div>
         </div>
         """
 
+    us_html = "".join([render_index_item(i) for i in us_indices])
+
+    hsi_html = ""
+    if hsi:
+        hsi_html = render_index_item(hsi)
+
     if fg_score is not None:
-        fg_display = f"""
-        <div class="index-price" style="color:#EF4444; font-weight:700; font-size:1.25rem;">{fg_score}</div>
-        <div class="index-change" style="color:#F87171; font-size:0.75rem;">{fg_level}</div>
+        fg_html = f"""
+        <div class="index-item">
+            <div class="index-name">Fear & Greed</div>
+            <div class="index-price" style="color:#EF4444; font-size:1.3rem;">{fg_score}</div>
+            <div class="index-pt" style="color:#F87171;">({fg_level})</div>
+            <div class="index-pct">&nbsp;</div>
+        </div>
         """
     else:
-        fg_display = "<div class='index-price' style='color:#A78BFA;'>--</div>"
+        fg_html = """
+        <div class="index-item">
+            <div class="index-name">Fear & Greed</div>
+            <div class="index-price" style="color:#A78BFA;">--</div>
+            <div class="index-pt">&nbsp;</div>
+            <div class="index-pct">&nbsp;</div>
+        </div>
+        """
 
     cards_html = ""
     if not stocks:
@@ -200,28 +227,23 @@ def dashboard():
             h2 {{ font-size: 1.05rem; margin: 24px 0 12px 0; color: #C4B5FD; }}
             .meta {{ color: #A78BFA; font-size: 0.9rem; margin-bottom: 16px; }}
             
-            .index-bar {{
+            .index-row {{
                 display: flex;
                 background: #1A1229;
                 border-radius: 16px;
-                padding: 14px 8px;
-                margin-bottom: 18px;
+                padding: 14px 6px;
+                margin-bottom: 10px;
                 border: 1px solid #2E1F47;
-                overflow-x: auto;
-                gap: 4px;
             }}
-            .index-item, .fg-item {{
+            .index-item {{
                 flex: 1;
                 text-align: center;
-                min-width: 68px;
+                min-width: 0;
             }}
-            .fg-item {{
-                border-left: 1px solid #2E1F47;
-                padding-left: 6px;
-            }}
-            .index-name {{ font-size: 0.72rem; color: #A78BFA; margin-bottom: 4px; white-space: nowrap; }}
-            .index-price {{ font-size: 0.92rem; font-weight: 700; color: #F5F3FF; }}
-            .index-change {{ font-size: 0.8rem; font-weight: 600; margin-top: 2px; }}
+            .index-name {{ font-size: 0.72rem; color: #A78BFA; margin-bottom: 4px; }}
+            .index-price {{ font-size: 0.95rem; font-weight: 700; color: #F5F3FF; }}
+            .index-pt {{ font-size: 0.8rem; font-weight: 600; margin-top: 3px; }}
+            .index-pct {{ font-size: 0.8rem; font-weight: 600; margin-top: 1px; }}
             
             .card {{
                 background: #1A1229;
@@ -299,12 +321,12 @@ def dashboard():
             符合條件：{count} 隻股票
         </div>
 
-        <div class="index-bar">
-            {index_html}
-            <div class="fg-item">
-                <div class="index-name">Fear & Greed</div>
-                {fg_display}
-            </div>
+        <div class="index-row">
+            {us_html}
+        </div>
+        <div class="index-row">
+            {hsi_html}
+            {fg_html}
         </div>
 
         <div class="settings">
