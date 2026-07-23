@@ -148,3 +148,4 @@ def dashboard():
 @app.get("/api/latest")
 def api_latest():
     return load_latest_scan()
+    
