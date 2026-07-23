@@ -1,9 +1,7 @@
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 import json
 from pathlib import Path
-import subprocess
-import os
 
 app = FastAPI(title="QuantFlow Dashboard")
 
@@ -35,11 +33,20 @@ def load_latest_scan():
         return json.load(f)
 
 
+def sort_stocks(stocks: list) -> list:
+    """按 Tier (S→A→B→C→D) 排序，同一 Tier 再按 ticker A-Z"""
+    tier_order = {"S": 0, "A": 1, "B": 2, "C": 3, "D": 4}
+    return sorted(
+        stocks,
+        key=lambda x: (tier_order.get(x.get("tier", "D"), 99), x.get("ticker", ""))
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     config = load_config()
     data = load_latest_scan()
-    stocks = data.get("stocks", [])
+    stocks = sort_stocks(data.get("stocks", []))
     scan_time = data.get("scan_time", "未知")
     count = data.get("count", 0)
 
@@ -56,13 +63,17 @@ def dashboard():
                 "watch": "👀 觀察"
             }
             signal_text = signal_map.get(signal, signal)
+
+            company_name = s.get("company_name", "")
+            display_name = f"{s.get('ticker')} ({company_name})" if company_name and company_name != s.get("ticker") else s.get("ticker")
+
             distance = s.get("distance_to_52w_high", 0)
             distance_text = f"已創新高 (+{distance}%)" if distance >= 0 else f"{distance}%"
 
             cards_html += f"""
             <div class="card">
                 <div class="card-header">
-                    <span class="ticker">{s.get('ticker')}</span>
+                    <span class="ticker">{display_name}</span>
                     <span class="tier tier-{tier}">Tier {tier}</span>
                 </div>
                 <div class="signal">{signal_text}</div>
@@ -111,7 +122,7 @@ def dashboard():
                 align-items: center;
                 margin-bottom: 8px;
             }}
-            .ticker {{ font-size: 1.3rem; font-weight: 700; }}
+            .ticker {{ font-size: 1.15rem; font-weight: 700; }}
             .tier {{
                 font-size: 0.85rem;
                 padding: 2px 8px;
@@ -121,6 +132,7 @@ def dashboard():
             .tier-S {{ background: #e63946; }}
             .tier-A {{ background: #f4a261; color: #000; }}
             .tier-B {{ background: #2a9d8f; }}
+            .tier-C {{ background: #e9c46a; color: #000; }}
             .signal {{ font-size: 1.1rem; margin-bottom: 10px; }}
             .info {{ font-size: 0.9rem; color: #ccc; line-height: 1.6; }}
             .price {{ margin-top: 10px; font-size: 0.85rem; color: #aaa; }}
@@ -131,7 +143,7 @@ def dashboard():
                 margin-bottom: 20px;
             }}
             label {{ display: block; margin: 10px 0 4px; color: #aaa; font-size: 0.9rem; }}
-            input[type=number], input[type=text] {{
+            input[type=number] {{
                 width: 100%;
                 padding: 10px;
                 border-radius: 8px;
@@ -159,7 +171,6 @@ def dashboard():
             }}
             .btn-primary {{ background: #3b82f6; color: white; }}
             .btn-scan {{ background: #10b981; color: white; }}
-            .btn-secondary {{ background: #333; color: #eee; }}
         </style>
     </head>
     <body>
@@ -218,7 +229,6 @@ async def update_config(
 @app.post("/run-scan")
 async def run_scan():
     try:
-        # 在背景執行掃描
         from screener.merge import run_full_scan
         run_full_scan()
     except Exception as e:
