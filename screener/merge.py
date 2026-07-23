@@ -9,6 +9,21 @@ from screener.data_fetcher import fetch_multiple_stocks
 logger = get_logger(__name__)
 
 
+def load_config():
+    """讀取搜尋條件設定"""
+    config_path = Path("data/config.json")
+    if not config_path.exists():
+        logger.warning("找不到 config.json，使用預設設定")
+        return {
+            "min_rs_rating": 80,
+            "require_trend_ok": True,
+            "require_macd_bullish": True,
+            "tickers": ["AAPL", "NVDA", "MSFT", "AMZN", "META"]
+        }
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def save_scan_result(filtered: list):
     """把掃描結果存成 JSON"""
     Path("data").mkdir(exist_ok=True)
@@ -28,18 +43,20 @@ def save_scan_result(filtered: list):
 def run_full_scan():
     logger.info("開始執行完整掃描...")
 
+    # 讀取設定
+    config = load_config()
+    tickers = config.get("tickers", [])
+    min_rs = config.get("min_rs_rating", 80)
+    require_trend = config.get("require_trend_ok", True)
+    require_macd = config.get("require_macd_bullish", True)
+
+    logger.info(f"設定：min_rs={min_rs}, require_trend={require_trend}, require_macd={require_macd}")
+    logger.info(f"股票數量：{len(tickers)}")
+
     # 建立/更新 Universe
     build_universe()
 
-    # 25 隻股票清單
-    tickers = [
-        "AAPL", "NVDA", "MSFT", "AMZN", "META",
-        "GOOGL", "TSLA", "AMD", "AVGO", "CRM",
-        "NFLX", "COST", "ADBE", "PEP", "LLY",
-        "V", "MA", "JPM", "XOM", "UNH",
-        "HD", "PG", "KO", "WMT", "ORCL"
-    ]
-
+    # 獲取真實數據
     logger.info(f"開始獲取 {len(tickers)} 隻股票真實數據...")
     stock_data = fetch_multiple_stocks(tickers)
     logger.info(f"成功獲取 {len(stock_data)} 隻股票數據")
@@ -48,12 +65,28 @@ def run_full_scan():
         msg = "掃描完成，無法獲取任何股票數據"
         logger.warning(msg)
         send_discord_message(msg)
+        save_scan_result([])
         return []
 
-    # 過濾
-    filtered = apply_dynamic_filters(stock_data)
+    # 動態過濾（根據 config）
+    filtered = []
+    for row in stock_data:
+        rs = row.get("rs_rating", 0)
+        trend_ok = row.get("trend_ok", False)
+        macd_status = row.get("macd_status", "neutral")
 
-    # 儲存結果（即使係 0 隻都儲存）
+        if rs < min_rs:
+            continue
+        if require_trend and not trend_ok:
+            continue
+        if require_macd and macd_status not in ["golden_cross", "bullish_momentum"]:
+            continue
+
+        filtered.append(row)
+
+    logger.info(f"過濾後剩餘 {len(filtered)} 檔股票")
+
+    # 儲存結果
     save_scan_result(filtered)
 
     if not filtered:
