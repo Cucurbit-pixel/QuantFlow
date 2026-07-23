@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 import json
 from pathlib import Path
@@ -116,6 +116,16 @@ def get_fear_greed():
     return None, None
 
 
+def run_scan_background():
+    """背景執行掃描"""
+    try:
+        from screener.merge import run_full_scan
+        run_full_scan()
+        print("✅ 背景掃描完成")
+    except Exception as e:
+        print(f"❌ 背景掃描錯誤: {e}")
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     config = load_config()
@@ -125,7 +135,7 @@ def dashboard():
     count = data.get("count", 0)
 
     indices = get_index_data()
-    us_indices = indices[:3]   # S&P, Nasdaq, Dow
+    us_indices = indices[:3]
     hsi = indices[3] if len(indices) > 3 else None
     fg_score, fg_level = get_fear_greed()
 
@@ -312,6 +322,12 @@ def dashboard():
             }}
             .btn-primary {{ background: #8B5CF6; color: white; }}
             .btn-scan {{ background: #7C3AED; color: white; }}
+            .scan-tip {{
+                text-align: center;
+                color: #A78BFA;
+                font-size: 0.85rem;
+                margin-top: 8px;
+            }}
         </style>
     </head>
     <body>
@@ -351,6 +367,7 @@ def dashboard():
             <form method="post" action="/run-scan" style="margin-top:8px;">
                 <button type="submit" class="btn-scan">立即執行掃描</button>
             </form>
+            <div class="scan-tip">掃描會在背景執行，約 1–3 分鐘後刷新頁面查看結果</div>
         </div>
 
         <h2>掃描結果</h2>
@@ -376,12 +393,8 @@ async def update_config(
 
 
 @app.post("/run-scan")
-async def run_scan():
-    try:
-        from screener.merge import run_full_scan
-        run_full_scan()
-    except Exception as e:
-        print(f"掃描錯誤: {e}")
+async def run_scan(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_scan_background)
     return RedirectResponse(url="/", status_code=303)
 
 
