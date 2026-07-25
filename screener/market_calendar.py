@@ -4,10 +4,8 @@ from screener.common import get_logger
 
 logger = get_logger(__name__)
 
-# 美股主要假期（固定日期 + 常見浮動日，簡化版）
-# 每年可再擴充
+# 美股主要固定假期 (月, 日)
 US_HOLIDAYS_FIXED = {
-    # (月, 日)
     (1, 1),    # New Year's Day
     (6, 19),   # Juneteenth
     (7, 4),    # Independence Day
@@ -33,21 +31,21 @@ def get_last_trading_day(reference: datetime = None) -> datetime:
 
     d = reference.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # 最多往前找 10 天
     for _ in range(10):
         if not _is_weekend(d) and not _is_fixed_holiday(d):
-            # 用 SPY 確認該日是否有數據
             try:
                 spy = yf.Ticker("SPY")
-                hist = spy.history(start=d.strftime("%Y-%m-%d"),
-                                   end=(d + timedelta(days=1)).strftime("%Y-%m-%d"))
+                hist = spy.history(
+                    start=d.strftime("%Y-%m-%d"),
+                    end=(d + timedelta(days=1)).strftime("%Y-%m-%d")
+                )
                 if not hist.empty:
                     return d
             except Exception:
                 pass
         d -= timedelta(days=1)
 
-    # fallback：再往前找有數據的日子
+    # fallback
     try:
         spy = yf.Ticker("SPY")
         hist = spy.history(period="10d")
@@ -65,11 +63,12 @@ def is_market_closed_today() -> bool:
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     if _is_weekend(today) or _is_fixed_holiday(today):
         return True
-    # 再確認 SPY 今日有無數據
     try:
         spy = yf.Ticker("SPY")
-        hist = spy.history(start=today.strftime("%Y-%m-%d"),
-                           end=(today + timedelta(days=1)).strftime("%Y-%m-%d"))
+        hist = spy.history(
+            start=today.strftime("%Y-%m-%d"),
+            end=(today + timedelta(days=1)).strftime("%Y-%m-%d")
+        )
         return hist.empty
     except Exception:
         return False
@@ -81,7 +80,7 @@ def get_scan_data_date_info() -> dict:
     {
         "is_closed": bool,
         "data_date": "2026-07-24",
-        "display": "2026-07-24（休市，使用前一交易日）" 或 "2026-07-25"
+        "display": "2026-07-24（休市，使用前一交易日）"
     }
     """
     today = datetime.now()
@@ -92,11 +91,13 @@ def get_scan_data_date_info() -> dict:
     if closed:
         display = f"{data_date}（休市，使用前一交易日）"
     else:
-        # 若今日開市但數據尚未更新，仍可能用昨日
         if last_td.date() < today.date():
             display = f"{data_date}（使用最近交易日）"
         else:
             display = data_date
 
     return {
-        "is_closed
+        "is_closed": closed,
+        "data_date": data_date,
+        "display": display
+    }
