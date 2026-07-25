@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantFlow Dashboard</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0F0A1A;
+            color: #F5F3FF;
+            margin: 0;
+            padding: 16px;
+            min-height: 100vh;
+        }
+        h1 { font-size: 1.5rem; margin: 0 0 6px 0; font-weight: 700; }
+        h2 { font-size: 1.05rem; margin: 24px 0 12px 0; color: #C4B5FD; }
+        .meta { color: #A78BFA; font-size: 0.9rem; margin-bottom: 16px; }
+
+        .index-row {
+            display: flex;
+            background: #1A1229;
+            border-radius: 16px;
+            padding: 14px 6px;
+            margin-bottom: 10px;
+            border: 1px solid #2E1F47;
+        }
+        .index-item { flex: 1; text-align: center; min-width: 0; }
+        .index-name { font-size: 0.72rem; color: #A78BFA; margin-bottom: 4px; }
+        .index-price { font-size: 0.95rem; font-weight: 700; color: #F5F3FF; }
+        .index-pt { font-size: 0.8rem; font-weight: 600; margin-top: 3px; }
+        .index-pct { font-size: 0.8rem; font-weight: 600; margin-top: 1px; }
+
+        .options-box {
+            background: #1A1229;
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            border: 1px solid #2E1F47;
+        }
+        .options-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: #F5F3FF;
+        }
+        .opt-level {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin: 12px 0 6px 0;
+        }
+        .opt-level.high { color: #F87171; }
+        .opt-level.medium { color: #FBBF24; }
+        .opt-level.low { color: #4ADE80; }
+        .opt-line {
+            font-size: 0.85rem;
+            color: #C4B5FD;
+            line-height: 1.7;
+            padding-left: 4px;
+        }
+
+        .card {
+            background: #1A1229;
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 14px;
+            border: 1px solid #2E1F47;
+        }
+        .tier-badge {
+            display: inline-block;
+            font-size: 0.85rem;
+            padding: 4px 14px;
+            border-radius: 999px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .tier-S { background: #E63946; color: #FFFFFF; font-weight: 800; }
+        .tier-A { background: #F4A261; color: #1A1229; }
+        .tier-B { background: #2A9D8F; color: white; }
+        .tier-C { background: #E9C46A; color: #1A1229; }
+        .tier-D { background: #457B9D; color: white; }
+        .ticker-line { font-size: 1.25rem; font-weight: 700; color: #F5F3FF; }
+        .company-name { font-size: 0.9rem; color: #A78BFA; margin: 2px 0 10px 0; }
+        .signal { font-size: 1.05rem; margin-bottom: 12px; color: #DDD6FE; }
+        .info { font-size: 0.9rem; color: #C4B5FD; line-height: 1.7; }
+        .info b { color: #F5F3FF; }
+        .price { margin-top: 12px; font-size: 0.85rem; color: #A78BFA; }
+        .tp { margin-top: 6px; font-size: 0.85rem; color: #A78BFA; }
+
+        .settings {
+            background: #1A1229;
+            border-radius: 16px;
+            padding: 18px;
+            margin-bottom: 20px;
+            border: 1px solid #2E1F47;
+        }
+        label { display: block; margin: 12px 0 6px; color: #A78BFA; font-size: 0.9rem; }
+        input[type=number] {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid #2E1F47;
+            background: #120C1F;
+            color: #F5F3FF;
+            font-size: 1rem;
+        }
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 14px 0;
+        }
+        .checkbox-row label { margin: 0; color: #DDD6FE; }
+        button {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            margin-top: 12px;
+            cursor: pointer;
+        }
+        .btn-primary { background: #8B5CF6; color: white; }
+        .btn-scan { background: #7C3AED; color: white; }
+        .scan-tip {
+            text-align: center;
+            color: #A78BFA;
+            font-size: 0.85rem;
+            margin-top: 8px;
+        }
+        #status {
+            text-align: center;
+            padding: 8px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+            display: none;
+        }
+        #status.scanning {
+            display: block;
+            background: #2E1F47;
+            color: #C4B5FD;
+        }
+        #status.done {
+            display: block;
+            background: #14532D;
+            color: #86EFAC;
+        }
+    </style>
+</head>
+<body>
+    <h1>QuantFlow 掃描結果</h1>
+    <div class="meta">
+        最新掃描時間：{{ scan_time }}<br>
+        數據日期：{{ data_date_display }}<br>
+        符合條件：{{ count }} 隻股票
+    </div>
+
+    <div id="status"></div>
+
+    <!-- 美股指數 -->
+    <div class="index-row">
+        {% for idx in us_indices %}
+        <div class="index-item">
+            <div class="index-name">{{ idx.name }}</div>
+            <div class="index-price">{{ idx.price }}</div>
+            <div class="index-pt" style="color:{{ idx.color }}">{{ idx.change_pt_str }}</div>
+            <div class="index-pct" style="color:{{ idx.color }}">{{ idx.change_pct_str }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- 恆生 + Fear & Greed -->
+    <div class="index-row">
+        {% if hsi %}
+        <div class="index-item">
+            <div class="index-name">{{ hsi.name }}</div>
+            <div class="index-price">{{ hsi.price }}</div>
+            <div class="index-pt" style="color:{{ hsi.color }}">{{ hsi.change_pt_str }}</div>
+            <div class="index-pct" style="color:{{ hsi.color }}">{{ hsi.change_pct_str }}</div>
+        </div>
+        {% endif %}
+        <div class="index-item">
+            <div class="index-name">Fear & Greed</div>
+            {% if fg_score is not none %}
+            <div class="index-price" style="color:#EF4444; font-size:1.3rem;">{{ fg_score }}</div>
+            <div class="index-pt" style="color:#F87171;">({{ fg_level }})</div>
+            {% else %}
+            <div class="index-price" style="color:#A78BFA;">--</div>
+            {% endif %}
+            <div class="index-pct">&nbsp;</div>
+        </div>
+    </div>
+
+    <!-- 期權異動 -->
+    {% if options_alerts %}
+    <div class="options-box">
+        <div class="options-title">🚀 期權異動監測</div>
+        {% if high_alerts %}
+        <div class="opt-level high">🔴 高關注</div>
+        {% for a in high_alerts %}
+        <div class="opt-line">• {{ a.ticker }} {{ a.option_type }} {{ a.strike }} | 到期 {{ a.expiry }} | 爆發 {{ a.vol_oi }}x | {{ a.moneyness }}</div>
+        {% endfor %}
+        {% endif %}
+        {% if medium_alerts %}
+        <div class="opt-level medium">🟡 中等關注</div>
+        {% for a in medium_alerts %}
+        <div class="opt-line">• {{ a.ticker }} {{ a.option_type }} {{ a.strike }} | 到期 {{ a.expiry }} | 爆發 {{ a.vol_oi }}x | {{ a.moneyness }}</div>
+        {% endfor %}
+        {% endif %}
+        {% if low_alerts %}
+        <div class="opt-level low">🟢 一般觀察</div>
+        {% for a in low_alerts %}
+        <div class="opt-line">• {{ a.ticker }} {{ a.option_type }} {{ a.strike }} | 到期 {{ a.expiry }} | 爆發 {{ a.vol_oi }}x | {{ a.moneyness }}</div>
+        {% endfor %}
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- 設定 -->
+    <div class="settings">
+        <h2>搜尋條件設定</h2>
+        <form method="post" action="/update-config">
+            <label>最低 RS Rating</label>
+            <input type="number" name="min_rs_rating" value="{{ min_rs_rating }}" min="0" max="99">
+
+            <div class="checkbox-row">
+                <input type="checkbox" name="require_trend_ok" value="true" {% if require_trend_ok %}checked{% endif %}>
+                <label>必須多頭排列</label>
+            </div>
+
+            <div class="checkbox-row">
+                <input type="checkbox" name="require_macd_bullish" value="true" {% if require_macd_bullish %}checked{% endif %}>
+                <label>必須 MACD 偏多</label>
+            </div>
+
+            <button type="submit" class="btn-primary">儲存設定</button>
+        </form>
+
+        <form method="post" action="/run-scan" style="margin-top:8px;" id="scan-form">
+            <button type="submit" class="btn-scan" id="scan-btn">立即執行掃描</button>
+        </form>
+        <div class="scan-tip">掃描會在背景執行（股票 + 期權），完成後自動刷新</div>
+    </div>
+
+    <h2>掃描結果</h2>
+    {% if not stocks %}
+    <p style="color:#A78BFA;">目前冇符合條件嘅股票</p>
+    {% else %}
+        {% for s in stocks %}
+        <div class="card">
+            <div class="tier-badge tier-{{ s.tier }}">Tier {{ s.tier }}</div>
+            <div class="ticker-line">📊 {{ s.ticker }}</div>
+            <div class="company-name">({{ s.company_name }})</div>
+            <div class="signal">{{ s.signal_text }}</div>
+            <div class="info">
+                <div>RS Rating：<b>{{ s.rs_rating }}</b></div>
+                <div>RSI：{{ s.rsi }}</div>
+                <div>MACD：{{ s.macd_status }}</div>
+                <div>趨勢：{{ s.trend }}</div>
+                <div>距離52週新高：{{ s.distance_text }}</div>
+                <div>突破：{{ s.breakout_status }}</div>
+            </div>
+            <div class="price">
+                現價：${{ s.close }} | 入場：${{ s.entry }} | 止損：${{ s.stop_loss }}
+            </div>
+            <div class="tp">
+                止盈1：${{ s.tp1 }} | 止盈2：${{ s.tp2 }} | 止盈3：${{ s.tp3 }}
+            </div>
+        </div>
+        {% endfor %}
+    {% endif %}
+
+    <script>
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        const statusEl = document.getElementById('status');
+        const scanBtn = document.getElementById('scan-btn');
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            if (data.type === 'scan_complete') {
+                statusEl.className = 'done';
+                statusEl.textContent = '✅ 掃描完成，正在刷新...';
+                setTimeout(() => location.reload(), 800);
+            } else if (data.type === 'scan_error') {
+                statusEl.className = 'done';
+                statusEl.textContent = '❌ 掃描出錯：' + (data.message || '');
+            }
+        };
+
+        document.getElementById('scan-form').addEventListener('submit', function() {
+            statusEl.className = 'scanning';
+            statusEl.textContent = '⏳ 掃描進行中（股票 + 期權），請稍候...';
+            scanBtn.disabled = true;
+            scanBtn.textContent = '掃描中...';
+        });
+    </script>
+</body>
+</html>
