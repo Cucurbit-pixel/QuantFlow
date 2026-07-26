@@ -104,6 +104,7 @@ def get_index_data():
 
 
 def get_fear_greed():
+    """VIX 近似 Fear & Greed（維持現有邏輯）"""
     try:
         hist = yf.Ticker("^VIX").history(period="5d")
         if hist.empty:
@@ -164,10 +165,14 @@ def run_scan_background():
         get_or_scan_options(force=True)
         print("✅ 期權掃描完成")
 
-        get_cboe_sentiment(force=True)
+        cboe = get_cboe_sentiment(force=True)
         print("✅ CBOE 情緒完成")
 
-        asyncio.run(broadcast({"type": "scan_complete"}))
+        summary = (cboe or {}).get("summary_short") or (cboe or {}).get("summary") or ""
+        asyncio.run(broadcast({
+            "type": "scan_complete",
+            "cboe_summary": summary
+        }))
     except Exception as e:
         print(f"❌ 背景掃描錯誤: {e}")
         asyncio.run(broadcast({"type": "scan_error", "message": str(e)}))
@@ -239,7 +244,7 @@ def dashboard():
         </div>
         """
 
-    # CBOE 情緒
+    # CBOE：中文標籤 + VIX 水平·方向
     cboe_html = ""
     if cboe and (
         cboe.get("vix") is not None
@@ -247,23 +252,28 @@ def dashboard():
         or cboe.get("equity_pc") is not None
     ):
         vix = cboe.get("vix")
-        vix_s = f"{vix}（{cboe.get('vix_label', '—')}）" if vix is not None else "—"
+        vix_label = cboe.get("vix_label") or "—"
+        if vix is not None:
+            chg = cboe.get("vix_change_pct")
+            chg_s = f" {chg:+.1f}%" if chg is not None else ""
+            vix_s = f"{vix}（{vix_label}）{chg_s}"
+        else:
+            vix_s = "—"
+
         ix = cboe.get("index_pc")
         ix_s = f"{ix}（{cboe.get('index_pc_label', '—')}）" if ix is not None else "—"
         eq = cboe.get("equity_pc")
         eq_s = f"{eq}（{cboe.get('equity_pc_label', '—')}）" if eq is not None else "—"
-        summary = cboe.get("summary") or ""
+
         cboe_html = f"""
         <div class="options-box">
             <div class="options-title">📊 CBOE 情緒</div>
-            <div class="opt-line">VIX：{vix_s}</div>
-            <div class="opt-line">指數 Put/Call：{ix_s}</div>
-            <div class="opt-line">Equity Put/Call：{eq_s}</div>
-            <div class="opt-reason">{summary}</div>
+            <div class="cboe-row"><span>VIX</span><span>{vix_s}</span></div>
+            <div class="cboe-row"><span>指數 Put/Call</span><span>{ix_s}</span></div>
+            <div class="cboe-row"><span>個股 Put/Call</span><span>{eq_s}</span></div>
         </div>
         """
 
-    # 期權異動
     options_html = ""
     if options_alerts:
         def line(a):
@@ -293,7 +303,6 @@ def dashboard():
         </div>
         """
 
-    # OI 結構
     oi_html = ""
     if oi_structures:
         lines = []
@@ -383,6 +392,13 @@ h2 {{ font-size: 1.05rem; margin: 24px 0 12px; color: #C4B5FD; }}
     margin-bottom: 16px; border: 1px solid #2E1F47;
 }}
 .options-title {{ font-size: 1.05rem; font-weight: 700; margin-bottom: 12px; }}
+.cboe-row {{
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 0.9rem; color: #C4B5FD; padding: 8px 0;
+    border-bottom: 1px solid #2E1F47;
+}}
+.cboe-row:last-child {{ border-bottom: none; }}
+.cboe-row span:last-child {{ color: #F5F3FF; font-weight: 600; text-align: right; }}
 .opt-level {{ font-size: 0.9rem; font-weight: 600; margin: 12px 0 6px; }}
 .opt-level.high {{ color: #F87171; }}
 .opt-level.medium {{ color: #FBBF24; }}
@@ -479,8 +495,15 @@ ws.onmessage = (e) => {{
     const d = JSON.parse(e.data);
     if (d.type === 'scan_complete') {{
         st.className = 'done';
-        st.textContent = '✅ 掃描完成，正在刷新...';
-        setTimeout(() => location.reload(), 800);
+        let msg = '✅ 掃描完成';
+        if (d.cboe_summary) {{
+            const s = d.cboe_summary.length > 64
+                ? d.cboe_summary.slice(0, 61) + '...'
+                : d.cboe_summary;
+            msg += '｜' + s;
+        }}
+        st.textContent = msg;
+        setTimeout(() => location.reload(), 1500);
     }} else if (d.type === 'scan_error') {{
         st.className = 'done';
         st.textContent = '❌ ' + (d.message || '');
@@ -488,7 +511,7 @@ ws.onmessage = (e) => {{
 }};
 document.getElementById('scan-form').onsubmit = () => {{
     st.className = 'scanning';
-    st.textContent = '⏳ 掃描中...';
+    st.textContent = '⏳ 掃描中（股票 + 期權 + OI + CBOE）...';
     btn.disabled = true;
     btn.textContent = '掃描中...';
 }};
