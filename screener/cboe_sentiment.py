@@ -1,7 +1,7 @@
 """
 CBOE 情緒指標（免費近似版）
-- VIX：恐懼／貪婪參考
-- Put/Call：用主要 ETF 期權 OI 近似 Equity / Index 情緒
+- VIX：水平 + 近幾日方向
+- 指數/個股 Put/Call：SPY、QQQ、IWM 近月 OI 近似
 """
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,18 +27,32 @@ def _pc_label(ratio: float | None) -> str:
     return "偏多"
 
 
-def _vix_label(vix: float | None) -> str:
+def _vix_level_label(vix: float | None) -> str:
     if vix is None:
         return "—"
     if vix >= 30:
-        return "極度恐懼"
-    if vix >= 25:
         return "恐懼"
-    if vix >= 18:
+    if vix >= 25:
+        return "偏恐懼"
+    if vix >= 20:
         return "中性"
     if vix >= 15:
-        return "偏貪婪"
+        return "中性偏多"
     return "貪婪"
+
+
+def _vix_direction(change_pct: float | None) -> str:
+    if change_pct is None:
+        return "—"
+    if change_pct >= 10:
+        return "急升"
+    if change_pct >= 3:
+        return "上升"
+    if change_pct <= -10:
+        return "急跌"
+    if change_pct <= -3:
+        return "回落"
+    return "平穩"
 
 
 def _safe_float(x):
@@ -52,7 +66,6 @@ def _safe_float(x):
 
 
 def _put_call_from_ticker(ticker: str) -> float | None:
-    """用近月期權 OI 計算 Put/Call Ratio"""
     try:
         t = yf.Ticker(ticker)
         expiries = t.options
@@ -73,64 +86,70 @@ def _put_call_from_ticker(ticker: str) -> float | None:
         return None
 
 
-def _get_vix() -> float | None:
+def _get_vix_with_direction() -> tuple[float | None, float | None, str, str]:
+    """
+    回傳: (vix, change_pct, level_label, direction_label)
+    """
     try:
-        hist = yf.Ticker("^VIX").history(period="5d")
+        hist = yf.Ticker("^VIX").history(period="10d")
         if hist is None or hist.empty:
-            return None
-        return _safe_float(hist["Close"].iloc[-1])
+            return None, None, "—", "—"
+        vix = _safe_float(hist["Close"].iloc[-1])
+        if vix is None:
+            return None, None, "—", "—"
+        change_pct = None
+        if len(hist) >= 2:
+            prev = _safe_float(hist["Close"].iloc[-2])
+            if prev and prev > 0:
+                change_pct = (vix - prev) / prev * 100
+        level = _vix_level_label(vix)
+        direction = _vix_direction(change_pct)
+        return vix, change_pct, level, direction
     except Exception as e:
         logger.warning(f"VIX 失敗: {e}")
-        return None
+        return None, None, "—", "—"
 
 
 def fetch_cboe_sentiment() -> dict:
-    """
-    回傳結構:
-    {
-      "scan_time": "...",
-      "vix": 18.5,
-      "vix_label": "中性",
-      "equity_pc": 0.85,      # 用 IWM/個股型 ETF 近似
-      "equity_pc_label": "...",
-      "index_pc": 1.05,       # 用 SPY/QQQ 近似
-      "index_pc_label": "...",
-      "summary": "..."
-    }
-    """
-    vix = _get_vix()
-    # Index 近似：SPY + QQQ 平均
+    vix, vix_chg, vix_level, vix_dir = _get_vix_with_direction()
+
     spy_pc = _put_call_from_ticker("SPY")
     qqq_pc = _put_call_from_ticker("QQQ")
     index_vals = [x for x in (spy_pc, qqq_pc) if x is not None]
     index_pc = round(sum(index_vals) / len(index_vals), 2) if index_vals else None
+    equity_pc = _put_call_from_ticker("IWM")  # 個股情緒近似
 
-    # Equity 近似：IWM（小型股）較接近個股情緒
-    equity_pc = _put_call_from_ticker("IWM")
-
-    vix_l = _vix_label(vix)
-    eq_l = _pc_label(equity_pc)
     ix_l = _pc_label(index_pc)
+    eq_l = _pc_label(equity_pc)
 
-    # 一句摘要
-    parts = []
     if vix is not None:
-        parts.append(f"VIX {vix:.1f}（{vix_l}）")
+        vix_label = f"{vix_level} · {vix_dir}"
+    else:
+        vix_label = "—"
+
+    # 短版（狀態列）
+    short_parts = []
+    if vix is not None:
+        short_parts.append(f"VIX {vix:.1f}·{vix_level}{'' if vix_dir == '—' else '·' + vix_dir}")
     if index_pc is not None:
-        parts.append(f"指數 P/C {index_pc}（{ix_l}）")
+        short_parts.append(f"指數P/C {index_pc}·{ix_l}")
     if equity_pc is not None:
-        parts.append(f"Equity P/C {equity_pc}（{eq_l}）")
-    summary = "；".join(parts) if parts else "暫無 CBOE 情緒數據"
+        short_parts.append(f"個股P/C {equity_pc}·{eq_l}")
+    summary_short = " ｜ ".join(short_parts) if short_parts else "暫無數據"
 
     return {
         "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "vix": round(vix, 2) if vix is not None else None,
-        "vix_label": vix_l,
-        "equity_pc": equity_pc,
-        "equity_pc_label": eq_l,
+        "vix_change_pct": round(vix_chg, 2) if vix_chg is not None else None,
+        "vix_level": vix_level,
+        "vix_direction": vix_dir,
+        "vix_label": vix_label,
         "index_pc": index_pc,
         "index_pc_label": ix_l,
-        "summary": summary,
+        "equity_pc": equity_pc,
+        "equity_pc_label": eq_l,
+        "summary": summary_short,
+        "summary_short": summary_short,
     }
 
 
@@ -146,7 +165,9 @@ def load_cboe_cache() -> dict | None:
     try:
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-        t = datetime.strptime(data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+        t = datetime.strptime(
+            data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
+        )
         if datetime.now() - t > timedelta(minutes=CACHE_MINUTES):
             return None
         return data
