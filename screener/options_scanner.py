@@ -8,13 +8,17 @@ from screener.common import get_logger
 logger = get_logger(__name__)
 
 OPTIONS_CACHE_PATH = Path("data/options_alerts.json")
-CACHE_MINUTES = 15  # 快取有效時間（分鐘）
+OI_STRUCTURE_CACHE_PATH = Path("data/oi_structure.json")
+CACHE_MINUTES = 15
 
 OPTIONS_UNIVERSE = [
     "SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "TSLA", "AMD",
     "META", "AMZN", "GOOGL", "AVGO", "NFLX", "CRM", "ORCL",
     "JPM", "BAC", "XOM", "COST", "UNH"
 ]
+
+# 用於 OI 結構分析的精選標的（避免太慢）
+OI_STRUCTURE_TICKERS = ["SPY", "QQQ", "TSLA", "NVDA", "AAPL", "AMZN", "META"]
 
 
 def get_moneyness(option_type: str, strike: float, spot: float) -> str:
@@ -34,6 +38,17 @@ def get_moneyness(option_type: str, strike: float, spot: float) -> str:
             return "平價"
 
 
+def get_action_and_bias(option_type: str) -> tuple:
+    """
+    免費數據無法精確分買賣方向，暫用約定：
+    Call → 買入 Call / 偏多
+    Put  → 買入 Put / 偏空
+    """
+    if option_type == "CALL":
+        return "買入 Call", "偏多"
+    return "買入 Put", "偏空"
+
+
 def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0) -> list:
     alerts = []
     try:
@@ -43,7 +58,7 @@ def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0
             return []
         spot = float(hist["Close"].iloc[-1])
 
-        expirations = stock.options[:2] if stock.options else []  # 只取最近 2 個到期，加快速度
+        expirations = stock.options[:2] if stock.options else []
         if not expirations:
             return []
 
@@ -76,10 +91,14 @@ def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0
                         else:
                             level = "low"
 
+                        action, bias = get_action_and_bias(opt_type)
+
                         alerts.append({
                             "level": level,
                             "ticker": ticker,
                             "option_type": opt_type,
+                            "action": action,
+                            "bias": bias,
                             "strike": strike,
                             "expiry": exp_short,
                             "vol_oi": vol_oi,
@@ -97,73 +116,17 @@ def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0
     return alerts
 
 
-def scan_options_unusual(
-    tickers: list = None,
-    min_vol: int = 200,
-    min_vol_oi: float = 2.0,
-    max_results: int = 12
-) -> list:
-    if tickers is None:
-        tickers = OPTIONS_UNIVERSE
-
-    all_alerts = []
-    logger.info(f"開始期權異動掃描（並行），共 {len(tickers)} 隻...")
-
-    def fetch_one(ticker):
-        return scan_ticker_options(ticker, min_vol=min_vol, min_vol_oi=min_vol_oi)
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(fetch_one, t): t for t in tickers}
-        for future in as_completed(futures):
-            try:
-                alerts = future.result()
-                all_alerts.extend(alerts)
-            except Exception as e:
-                logger.error(f"並行期權掃描失敗: {e}")
-
-    all_alerts.sort(key=lambda x: x["vol_oi"], reverse=True)
-    result = all_alerts[:max_results]
-    logger.info(f"期權異動掃描完成，找到 {len(result)} 筆")
-    return result
-
-
-def save_options_cache(alerts: list):
-    Path("data").mkdir(exist_ok=True)
-    data = {
-        "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "alerts": alerts
-    }
-    with open(OPTIONS_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def load_options_cache() -> list:
-    """讀取快取，過期則回傳空列表"""
-    if not OPTIONS_CACHE_PATH.exists():
-        return []
+def calc_max_pain(calls_df, puts_df) -> float | None:
+    """計算 Max Pain（使期權買家總虧損最大的到價）"""
     try:
-        with open(OPTIONS_CACHE_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        scan_time = datetime.strptime(data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
-        if datetime.now() - scan_time > timedelta(minutes=CACHE_MINUTES):
-            logger.info("期權快取已過期")
-            return []
-        return data.get("alerts", [])
-    except Exception as e:
-        logger.error(f"讀取期權快取失敗: {e}")
-        return []
+        strikes = set()
+        call_oi = {}
+        put_oi = {}
 
-
-def get_or_scan_options(force: bool = False) -> list:
-    """
-    優先讀快取；force=True 或快取過期時重新掃描並寫入快取
-    """
-    if not force:
-        cached = load_options_cache()
-        if cached:
-            logger.info(f"使用期權快取，共 {len(cached)} 筆")
-            return cached
-
-    alerts = scan_options_unusual()
-    save_options_cache(alerts)
-    return alerts
+        if calls_df is not None and not calls_df.empty:
+            for _, row in calls_df.iterrows():
+                k = float(row.get("strike") or 0)
+                oi = int(row.get("openInterest") or 0)
+                if k > 0:
+                    strikes.add(k)
+                    call
