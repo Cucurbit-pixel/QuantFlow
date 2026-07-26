@@ -2,6 +2,7 @@ from fastapi import FastAPI, Form, BackgroundTasks, WebSocket, WebSocketDisconne
 from fastapi.responses import HTMLResponse, RedirectResponse
 import json
 from pathlib import Path
+import math
 import yfinance as yf
 import asyncio
 from typing import List
@@ -61,6 +62,7 @@ def sort_stocks(stocks: list) -> list:
 
 
 def get_index_data():
+    """取得指數數據，並處理 NaN / 休市情況"""
     symbols = {
         "S&P 500": "^GSPC",
         "Nasdaq": "^IXIC",
@@ -71,25 +73,35 @@ def get_index_data():
     for name, symbol in symbols.items():
         try:
             t = yf.Ticker(symbol)
-            hist = t.history(period="5d")
-            if len(hist) >= 2:
-                current = float(hist["Close"].iloc[-1])
-                prev = float(hist["Close"].iloc[-2])
-                change_pt = current - prev
-                change_pct = (change_pt / prev) * 100
-                results.append({
-                    "name": name,
-                    "price": f"{current:,.2f}",
-                    "change_pt": change_pt,
-                    "change_pt_str": f"{change_pt:+,.2f}",
-                    "change_pct": change_pct,
-                    "change_pct_str": f"{change_pct:+.2f}%"
-                })
-            else:
+            hist = t.history(period="10d")
+            if hist is None or hist.empty or len(hist) < 2:
                 results.append({
                     "name": name, "price": "--", "change_pt": 0,
                     "change_pt_str": "--", "change_pct": 0, "change_pct_str": "--"
                 })
+                continue
+
+            current = float(hist["Close"].iloc[-1])
+            prev = float(hist["Close"].iloc[-2])
+
+            # 檢查 NaN / 無效值
+            if math.isnan(current) or math.isnan(prev) or prev == 0:
+                results.append({
+                    "name": name, "price": "--", "change_pt": 0,
+                    "change_pt_str": "--", "change_pct": 0, "change_pct_str": "--"
+                })
+                continue
+
+            change_pt = current - prev
+            change_pct = (change_pt / prev) * 100
+            results.append({
+                "name": name,
+                "price": f"{current:,.2f}",
+                "change_pt": change_pt,
+                "change_pt_str": f"{change_pt:+,.2f}",
+                "change_pct": change_pct,
+                "change_pct_str": f"{change_pct:+.2f}%"
+            })
         except Exception:
             results.append({
                 "name": name, "price": "--", "change_pt": 0,
@@ -104,6 +116,8 @@ def get_fear_greed():
         hist = vix.history(period="5d")
         if not hist.empty:
             vix_value = float(hist["Close"].iloc[-1])
+            if math.isnan(vix_value):
+                return None, None
             if vix_value < 15:
                 score = 78
             elif vix_value < 18:
