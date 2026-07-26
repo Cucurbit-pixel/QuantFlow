@@ -24,6 +24,19 @@ def _exp_short(exp: str) -> str:
     return f"{parts[1]}-{parts[2]}" if len(parts) == 3 else exp
 
 
+def _valid_spot(spot) -> float | None:
+    """過濾 None / NaN / <=0"""
+    if spot is None:
+        return None
+    try:
+        v = float(spot)
+        if v != v or v <= 0:  # NaN check: v != v
+            return None
+        return v
+    except (TypeError, ValueError):
+        return None
+
+
 def _moneyness(opt_type: str, strike: float, spot: float) -> str:
     if opt_type == "CALL":
         if strike < spot * 0.98:
@@ -40,12 +53,14 @@ def _moneyness(opt_type: str, strike: float, spot: float) -> str:
 
 def _recommend(opt_type: str, moneyness: str, strike: float, spot: float,
                call_wall: float | None, put_wall: float | None) -> tuple[str, str]:
-    """
-    回傳 (建議, 理由)
-    賣出會標「謹慎」
-    """
-    near_call_wall = call_wall is not None and abs(strike - call_wall) / max(spot, 1) < 0.03
-    near_put_wall = put_wall is not None and abs(strike - put_wall) / max(spot, 1) < 0.03
+    near_call_wall = (
+        call_wall is not None and spot > 0
+        and abs(strike - call_wall) / spot < 0.03
+    )
+    near_put_wall = (
+        put_wall is not None and spot > 0
+        and abs(strike - put_wall) / spot < 0.03
+    )
 
     if opt_type == "CALL":
         if moneyness in ("平價", "價內"):
@@ -54,7 +69,6 @@ def _recommend(opt_type: str, moneyness: str, strike: float, spot: float,
             return "建議賣出 Call（謹慎）", "價外 Call 接近 Call Wall，阻力區收權利金（風險較高）"
         return "建議買入 Call", "Call 異動，偏多結構（參考）"
 
-    # PUT
     if moneyness in ("平價", "價內"):
         return "建議買入 Put", "平價/價內 Put 異動，偏空/保護"
     if moneyness == "價外" and near_put_wall:
@@ -104,62 +118,84 @@ def _walls(calls: list, puts: list):
 
 
 def analyze_oi_structure(ticker: str) -> dict | None:
-    src = get_options_source()
-    data = src.get_chains(ticker, max_expiries=1)
-    spot = data.get("spot")
-    if not spot or not data.get("chains"):
+    """分析 Call Wall / Put Wall / Max Pain；無效現價則回傳 None"""
+    try:
+        src = get_options_source()
+        data = src.get_chains(ticker, max_expiries=1)
+        spot = _valid_spot(data.get("spot"))
+        if spot is None:
+            logger.warning(f"{ticker} OI 結構：現價無效，跳過")
+            return None
+        if not data.get("chains"):
+            logger.warning(f"{ticker} OI 結構：無期權鏈，跳過")
+            return None
+
+        exp = next(iter(data["chains"]))
+        chain = data["chains"][exp]
+        calls, puts = chain.get("calls") or [], chain.get("puts") or []
+        if not calls and not puts:
+            return None
+
+        cw, cw_oi, pw, pw_oi, tc, tp = _walls(calls, puts)
+        mp = _calc_max_pain(calls, puts)
+        pcr = round(tp / tc, 2) if tc > 0 else None
+        bias = "偏空" if pcr and pcr > 1.0 else "偏多" if pcr is not None else "—"
+
+        return {
+            "ticker": ticker,
+            "spot": round(spot, 2),
+            "expiry": _exp_short(exp),
+            "call_wall": cw,
+            "call_wall_oi": cw_oi,
+            "put_wall": pw,
+            "put_wall_oi": pw_oi,
+            "max_pain": mp,
+            "put_call_oi_ratio": pcr,
+            "bias": bias,
+        }
+    except Exception as e:
+        logger.error(f"OI 結構分析 {ticker} 失敗: {e}")
         return None
-    exp = next(iter(data["chains"]))
-    chain = data["chains"][exp]
-    calls, puts = chain["calls"], chain["puts"]
-    cw, cw_oi, pw, pw_oi, tc, tp = _walls(calls, puts)
-    mp = _calc_max_pain(calls, puts)
-    pcr = round(tp / tc, 2) if tc > 0 else None
-    bias = "偏空" if pcr and pcr > 1.0 else "偏多" if pcr is not None else "—"
-    return {
-        "ticker": ticker,
-        "spot": round(spot, 2),
-        "expiry": _exp_short(exp),
-        "call_wall": cw,
-        "call_wall_oi": cw_oi,
-        "put_wall": pw,
-        "put_wall_oi": pw_oi,
-        "max_pain": mp,
-        "put_call_oi_ratio": pcr,
-        "bias": bias,
-    }
 
 
 def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0) -> list:
     src = get_options_source()
     data = src.get_chains(ticker, max_expiries=2)
-    spot = data.get("spot")
-    if not spot:
+    spot = _valid_spot(data.get("spot"))
+    if spot is None:
         return []
 
-    # 先取 wall 供建議邏輯
     call_wall = put_wall = None
-    if data["chains"]:
+    if data.get("chains"):
         first = next(iter(data["chains"].values()))
-        call_wall, _, put_wall, _, _, _ = _walls(first["calls"], first["puts"])
+        call_wall, _, put_wall, _, _, _ = _walls(
+            first.get("calls") or [], first.get("puts") or []
+        )
 
     alerts = []
-    for exp, chain in data["chains"].items():
+    for exp, chain in (data.get("chains") or {}).items():
         exp_s = _exp_short(exp)
-        for opt_type, contracts in [("CALL", chain["calls"]), ("PUT", chain["puts"])]:
+        for opt_type, contracts in [
+            ("CALL", chain.get("calls") or []),
+            ("PUT", chain.get("puts") or []),
+        ]:
             for c in contracts:
-                vol, oi, strike = c["volume"], c["open_interest"], c["strike"]
-                if vol < min_vol or oi <= 0:
+                vol = int(c.get("volume") or 0)
+                oi = int(c.get("open_interest") or 0)
+                strike = float(c.get("strike") or 0)
+                if vol < min_vol or oi <= 0 or strike <= 0:
                     continue
                 vol_oi = round(vol / oi, 2)
                 if vol_oi < min_vol_oi:
                     continue
+
                 if vol_oi >= 4.0 and vol >= 500:
                     level = "high"
                 elif vol_oi >= 2.5 and vol >= 300:
                     level = "medium"
                 else:
                     level = "low"
+
                 m = _moneyness(opt_type, strike, spot)
                 rec, reason = _recommend(opt_type, m, strike, spot, call_wall, put_wall)
                 alerts.append({
@@ -179,13 +215,21 @@ def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0
     return alerts
 
 
-def scan_options_unusual(tickers=None, min_vol=200, min_vol_oi=2.0, max_results=12) -> list:
+def scan_options_unusual(
+    tickers: list = None,
+    min_vol: int = 200,
+    min_vol_oi: float = 2.0,
+    max_results: int = 12
+) -> list:
     tickers = tickers or OPTIONS_UNIVERSE
     all_alerts = []
     logger.info(f"期權異動掃描 {len(tickers)} 隻...")
 
     with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = {ex.submit(scan_ticker_options, t, min_vol, min_vol_oi): t for t in tickers}
+        futs = {
+            ex.submit(scan_ticker_options, t, min_vol, min_vol_oi): t
+            for t in tickers
+        }
         for fut in as_completed(futs):
             try:
                 all_alerts.extend(fut.result())
@@ -198,29 +242,38 @@ def scan_options_unusual(tickers=None, min_vol=200, min_vol_oi=2.0, max_results=
     return result
 
 
-def scan_oi_structures(tickers=None) -> list:
+def scan_oi_structures(tickers: list = None) -> list:
     tickers = tickers or OI_TICKERS
     results = []
+    logger.info(f"OI 結構分析 {len(tickers)} 隻...")
+
     with ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(analyze_oi_structure, t): t for t in tickers}
         for fut in as_completed(futs):
             try:
                 r = fut.result()
-                if r:
+                if r and _valid_spot(r.get("spot")) is not None:
                     results.append(r)
             except Exception as e:
                 logger.error(f"OI 結構失敗: {e}")
+
     results.sort(key=lambda x: x["ticker"])
+    logger.info(f"OI 結構完成：{len(results)} 隻有效")
     return results
 
 
 def _save(path: Path, key: str, items: list):
     Path("data").mkdir(exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({
-            "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            key: items
-        }, f, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                key: items,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 def _load(path: Path, key: str) -> list:
@@ -229,7 +282,9 @@ def _load(path: Path, key: str) -> list:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        t = datetime.strptime(data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+        t = datetime.strptime(
+            data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
+        )
         if datetime.now() - t > timedelta(minutes=CACHE_MINUTES):
             return []
         return data.get(key, [])
@@ -242,7 +297,9 @@ def load_options_cache() -> list:
 
 
 def load_oi_structure_cache() -> list:
-    return _load(OI_CACHE, "structures")
+    """只回傳現價有效的項目，避免舊快取出現 nan"""
+    items = _load(OI_CACHE, "structures")
+    return [s for s in items if _valid_spot(s.get("spot")) is not None]
 
 
 def get_or_scan_options(force: bool = False) -> list:
@@ -250,8 +307,11 @@ def get_or_scan_options(force: bool = False) -> list:
         cached = load_options_cache()
         if cached:
             return cached
+
     alerts = scan_options_unusual()
     _save(OPTIONS_CACHE, "alerts", alerts)
+
     structures = scan_oi_structures()
     _save(OI_CACHE, "structures", structures)
+
     return alerts
