@@ -2,13 +2,13 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import yfinance as yf
 from screener.common import get_logger
+from screener.options import get_options_source
 
 logger = get_logger(__name__)
 
-OPTIONS_CACHE_PATH = Path("data/options_alerts.json")
-OI_STRUCTURE_CACHE_PATH = Path("data/oi_structure.json")
+OPTIONS_CACHE = Path("data/options_alerts.json")
+OI_CACHE = Path("data/oi_structure.json")
 CACHE_MINUTES = 15
 
 OPTIONS_UNIVERSE = [
@@ -16,320 +16,233 @@ OPTIONS_UNIVERSE = [
     "META", "AMZN", "GOOGL", "AVGO", "NFLX", "CRM", "ORCL",
     "JPM", "BAC", "XOM", "COST", "UNH"
 ]
-
-# 用於 OI 結構分析的精選標的（避免太慢）
-OI_STRUCTURE_TICKERS = ["SPY", "QQQ", "TSLA", "NVDA", "AAPL", "AMZN", "META"]
+OI_TICKERS = ["SPY", "QQQ", "TSLA", "NVDA", "AAPL", "AMZN", "META"]
 
 
-def get_moneyness(option_type: str, strike: float, spot: float) -> str:
-    if option_type == "CALL":
+def _exp_short(exp: str) -> str:
+    parts = exp.split("-")
+    return f"{parts[1]}-{parts[2]}" if len(parts) == 3 else exp
+
+
+def _moneyness(opt_type: str, strike: float, spot: float) -> str:
+    if opt_type == "CALL":
         if strike < spot * 0.98:
             return "價內"
-        elif strike > spot * 1.02:
-            return "價外"
-        else:
-            return "平價"
-    else:
         if strike > spot * 1.02:
-            return "價內"
-        elif strike < spot * 0.98:
             return "價外"
-        else:
-            return "平價"
+        return "平價"
+    if strike > spot * 1.02:
+        return "價內"
+    if strike < spot * 0.98:
+        return "價外"
+    return "平價"
 
 
-def get_action_and_bias(option_type: str) -> tuple:
+def _recommend(opt_type: str, moneyness: str, strike: float, spot: float,
+               call_wall: float | None, put_wall: float | None) -> tuple[str, str]:
     """
-    免費數據無法精確分買賣方向，暫用約定：
-    Call → 買入 Call / 偏多
-    Put  → 買入 Put / 偏空
+    回傳 (建議, 理由)
+    賣出會標「謹慎」
     """
-    if option_type == "CALL":
-        return "買入 Call", "偏多"
-    return "買入 Put", "偏空"
+    near_call_wall = call_wall is not None and abs(strike - call_wall) / max(spot, 1) < 0.03
+    near_put_wall = put_wall is not None and abs(strike - put_wall) / max(spot, 1) < 0.03
+
+    if opt_type == "CALL":
+        if moneyness in ("平價", "價內"):
+            return "建議買入 Call", "平價/價內 Call 異動，偏多結構"
+        if moneyness == "價外" and near_call_wall:
+            return "建議賣出 Call（謹慎）", "價外 Call 接近 Call Wall，阻力區收權利金（風險較高）"
+        return "建議買入 Call", "Call 異動，偏多結構（參考）"
+
+    # PUT
+    if moneyness in ("平價", "價內"):
+        return "建議買入 Put", "平價/價內 Put 異動，偏空/保護"
+    if moneyness == "價外" and near_put_wall:
+        return "建議賣出 Put（謹慎）", "價外 Put 接近 Put Wall，支撐區收權利金（風險較高）"
+    return "建議買入 Put", "Put 異動，偏空結構（參考）"
 
 
-def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0) -> list:
-    alerts = []
-    try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="5d")
-        if hist.empty:
-            return []
-        spot = float(hist["Close"].iloc[-1])
-
-        expirations = stock.options[:2] if stock.options else []
-        if not expirations:
-            return []
-
-        for exp in expirations:
-            try:
-                chain = stock.option_chain(exp)
-                parts = exp.split("-")
-                exp_short = f"{parts[1]}-{parts[2]}" if len(parts) == 3 else exp
-
-                for opt_type, df in [("CALL", chain.calls), ("PUT", chain.puts)]:
-                    if df is None or df.empty:
-                        continue
-
-                    for _, row in df.iterrows():
-                        volume = int(row.get("volume") or 0)
-                        oi = int(row.get("openInterest") or 0)
-                        strike = float(row.get("strike") or 0)
-
-                        if volume < min_vol or oi <= 0:
-                            continue
-
-                        vol_oi = round(volume / oi, 2)
-                        if vol_oi < min_vol_oi:
-                            continue
-
-                        if vol_oi >= 4.0 and volume >= 500:
-                            level = "high"
-                        elif vol_oi >= 2.5 and volume >= 300:
-                            level = "medium"
-                        else:
-                            level = "low"
-
-                        action, bias = get_action_and_bias(opt_type)
-
-                        alerts.append({
-                            "level": level,
-                            "ticker": ticker,
-                            "option_type": opt_type,
-                            "action": action,
-                            "bias": bias,
-                            "strike": strike,
-                            "expiry": exp_short,
-                            "vol_oi": vol_oi,
-                            "volume": volume,
-                            "oi": oi,
-                            "moneyness": get_moneyness(opt_type, strike, spot)
-                        })
-            except Exception as e:
-                logger.warning(f"{ticker} {exp} 期權鏈失敗: {e}")
-                continue
-
-    except Exception as e:
-        logger.error(f"掃描 {ticker} 期權失敗: {e}")
-
-    return alerts
-
-
-def calc_max_pain(calls_df, puts_df) -> float | None:
-    """計算 Max Pain（使期權買家總虧損最大的到價）"""
-    try:
-        strikes = set()
-        call_oi = {}
-        put_oi = {}
-
-        if calls_df is not None and not calls_df.empty:
-            for _, row in calls_df.iterrows():
-                k = float(row.get("strike") or 0)
-                oi = int(row.get("openInterest") or 0)
-                if k > 0:
-                    strikes.add(k)
-                    call_oi[k] = call_oi.get(k, 0) + oi
-
-        if puts_df is not None and not puts_df.empty:
-            for _, row in puts_df.iterrows():
-                k = float(row.get("strike") or 0)
-                oi = int(row.get("openInterest") or 0)
-                if k > 0:
-                    strikes.add(k)
-                    put_oi[k] = put_oi.get(k, 0) + oi
-
-        if not strikes:
-            return None
-
-        strike_list = sorted(strikes)
-        min_pain = None
-        max_pain_strike = None
-
-        for s in strike_list:
-            pain = 0.0
-            for k, oi in call_oi.items():
-                pain += max(0.0, s - k) * oi
-            for k, oi in put_oi.items():
-                pain += max(0.0, k - s) * oi
-            if min_pain is None or pain < min_pain:
-                min_pain = pain
-                max_pain_strike = s
-
-        return max_pain_strike
-    except Exception as e:
-        logger.warning(f"Max Pain 計算失敗: {e}")
+def _calc_max_pain(calls: list, puts: list) -> float | None:
+    strikes = set()
+    call_oi, put_oi = {}, {}
+    for c in calls:
+        k, oi = c["strike"], c["open_interest"]
+        if k > 0:
+            strikes.add(k)
+            call_oi[k] = call_oi.get(k, 0) + oi
+    for p in puts:
+        k, oi = p["strike"], p["open_interest"]
+        if k > 0:
+            strikes.add(k)
+            put_oi[k] = put_oi.get(k, 0) + oi
+    if not strikes:
         return None
+    best_s, best_pain = None, None
+    for s in sorted(strikes):
+        pain = sum(max(0.0, s - k) * oi for k, oi in call_oi.items())
+        pain += sum(max(0.0, k - s) * oi for k, oi in put_oi.items())
+        if best_pain is None or pain < best_pain:
+            best_pain, best_s = pain, s
+    return best_s
+
+
+def _walls(calls: list, puts: list):
+    cw_k, cw_oi = None, 0
+    pw_k, pw_oi = None, 0
+    total_c, total_p = 0, 0
+    for c in calls:
+        oi = c["open_interest"]
+        total_c += oi
+        if oi > cw_oi:
+            cw_oi, cw_k = oi, c["strike"]
+    for p in puts:
+        oi = p["open_interest"]
+        total_p += oi
+        if oi > pw_oi:
+            pw_oi, pw_k = oi, p["strike"]
+    return cw_k, cw_oi, pw_k, pw_oi, total_c, total_p
 
 
 def analyze_oi_structure(ticker: str) -> dict | None:
-    """分析單一股票的 Call Wall / Put Wall / Max Pain"""
-    try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="5d")
-        if hist.empty:
-            return None
-        spot = float(hist["Close"].iloc[-1])
-
-        expirations = stock.options[:1] if stock.options else []
-        if not expirations:
-            return None
-
-        exp = expirations[0]
-        chain = stock.option_chain(exp)
-        calls = chain.calls
-        puts = chain.puts
-
-        call_wall_strike, call_wall_oi = None, 0
-        put_wall_strike, put_wall_oi = None, 0
-        total_call_oi, total_put_oi = 0, 0
-
-        if calls is not None and not calls.empty:
-            for _, row in calls.iterrows():
-                oi = int(row.get("openInterest") or 0)
-                strike = float(row.get("strike") or 0)
-                total_call_oi += oi
-                if oi > call_wall_oi:
-                    call_wall_oi = oi
-                    call_wall_strike = strike
-
-        if puts is not None and not puts.empty:
-            for _, row in puts.iterrows():
-                oi = int(row.get("openInterest") or 0)
-                strike = float(row.get("strike") or 0)
-                total_put_oi += oi
-                if oi > put_wall_oi:
-                    put_wall_oi = oi
-                    put_wall_strike = strike
-
-        max_pain = calc_max_pain(calls, puts)
-        pc_ratio = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else None
-        bias = "偏空" if pc_ratio and pc_ratio > 1.0 else "偏多" if pc_ratio is not None else "—"
-
-        parts = exp.split("-")
-        exp_short = f"{parts[1]}-{parts[2]}" if len(parts) == 3 else exp
-
-        return {
-            "ticker": ticker,
-            "spot": round(spot, 2),
-            "expiry": exp_short,
-            "call_wall": call_wall_strike,
-            "call_wall_oi": call_wall_oi,
-            "put_wall": put_wall_strike,
-            "put_wall_oi": put_wall_oi,
-            "max_pain": max_pain,
-            "put_call_oi_ratio": pc_ratio,
-            "bias": bias
-        }
-    except Exception as e:
-        logger.error(f"OI 結構分析 {ticker} 失敗: {e}")
+    src = get_options_source()
+    data = src.get_chains(ticker, max_expiries=1)
+    spot = data.get("spot")
+    if not spot or not data.get("chains"):
         return None
+    exp = next(iter(data["chains"]))
+    chain = data["chains"][exp]
+    calls, puts = chain["calls"], chain["puts"]
+    cw, cw_oi, pw, pw_oi, tc, tp = _walls(calls, puts)
+    mp = _calc_max_pain(calls, puts)
+    pcr = round(tp / tc, 2) if tc > 0 else None
+    bias = "偏空" if pcr and pcr > 1.0 else "偏多" if pcr is not None else "—"
+    return {
+        "ticker": ticker,
+        "spot": round(spot, 2),
+        "expiry": _exp_short(exp),
+        "call_wall": cw,
+        "call_wall_oi": cw_oi,
+        "put_wall": pw,
+        "put_wall_oi": pw_oi,
+        "max_pain": mp,
+        "put_call_oi_ratio": pcr,
+        "bias": bias,
+    }
 
 
-def scan_options_unusual(
-    tickers: list = None,
-    min_vol: int = 200,
-    min_vol_oi: float = 2.0,
-    max_results: int = 12
-) -> list:
-    if tickers is None:
-        tickers = OPTIONS_UNIVERSE
+def scan_ticker_options(ticker: str, min_vol: int = 200, min_vol_oi: float = 2.0) -> list:
+    src = get_options_source()
+    data = src.get_chains(ticker, max_expiries=2)
+    spot = data.get("spot")
+    if not spot:
+        return []
 
+    # 先取 wall 供建議邏輯
+    call_wall = put_wall = None
+    if data["chains"]:
+        first = next(iter(data["chains"].values()))
+        call_wall, _, put_wall, _, _, _ = _walls(first["calls"], first["puts"])
+
+    alerts = []
+    for exp, chain in data["chains"].items():
+        exp_s = _exp_short(exp)
+        for opt_type, contracts in [("CALL", chain["calls"]), ("PUT", chain["puts"])]:
+            for c in contracts:
+                vol, oi, strike = c["volume"], c["open_interest"], c["strike"]
+                if vol < min_vol or oi <= 0:
+                    continue
+                vol_oi = round(vol / oi, 2)
+                if vol_oi < min_vol_oi:
+                    continue
+                if vol_oi >= 4.0 and vol >= 500:
+                    level = "high"
+                elif vol_oi >= 2.5 and vol >= 300:
+                    level = "medium"
+                else:
+                    level = "low"
+                m = _moneyness(opt_type, strike, spot)
+                rec, reason = _recommend(opt_type, m, strike, spot, call_wall, put_wall)
+                alerts.append({
+                    "level": level,
+                    "ticker": ticker,
+                    "option_type": opt_type,
+                    "recommendation": rec,
+                    "reason": reason,
+                    "strike": strike,
+                    "expiry": exp_s,
+                    "vol_oi": vol_oi,
+                    "volume": vol,
+                    "oi": oi,
+                    "moneyness": m,
+                    "bias": "偏多" if opt_type == "CALL" else "偏空",
+                })
+    return alerts
+
+
+def scan_options_unusual(tickers=None, min_vol=200, min_vol_oi=2.0, max_results=12) -> list:
+    tickers = tickers or OPTIONS_UNIVERSE
     all_alerts = []
-    logger.info(f"開始期權異動掃描（並行），共 {len(tickers)} 隻...")
+    logger.info(f"期權異動掃描 {len(tickers)} 隻...")
 
-    def fetch_one(ticker):
-        return scan_ticker_options(ticker, min_vol=min_vol, min_vol_oi=min_vol_oi)
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(fetch_one, t): t for t in tickers}
-        for future in as_completed(futures):
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = {ex.submit(scan_ticker_options, t, min_vol, min_vol_oi): t for t in tickers}
+        for fut in as_completed(futs):
             try:
-                alerts = future.result()
-                all_alerts.extend(alerts)
+                all_alerts.extend(fut.result())
             except Exception as e:
-                logger.error(f"並行期權掃描失敗: {e}")
+                logger.error(f"期權掃描失敗: {e}")
 
     all_alerts.sort(key=lambda x: x["vol_oi"], reverse=True)
     result = all_alerts[:max_results]
-    logger.info(f"期權異動掃描完成，找到 {len(result)} 筆")
+    logger.info(f"期權異動完成：{len(result)} 筆")
     return result
 
 
-def scan_oi_structures(tickers: list = None) -> list:
-    if tickers is None:
-        tickers = OI_STRUCTURE_TICKERS
-
+def scan_oi_structures(tickers=None) -> list:
+    tickers = tickers or OI_TICKERS
     results = []
-    logger.info(f"開始 OI 結構分析，共 {len(tickers)} 隻...")
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(analyze_oi_structure, t): t for t in tickers}
-        for future in as_completed(futures):
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(analyze_oi_structure, t): t for t in tickers}
+        for fut in as_completed(futs):
             try:
-                data = future.result()
-                if data:
-                    results.append(data)
+                r = fut.result()
+                if r:
+                    results.append(r)
             except Exception as e:
-                logger.error(f"OI 結構並行失敗: {e}")
-
+                logger.error(f"OI 結構失敗: {e}")
     results.sort(key=lambda x: x["ticker"])
-    logger.info(f"OI 結構分析完成，共 {len(results)} 隻")
     return results
 
 
-def save_options_cache(alerts: list):
+def _save(path: Path, key: str, items: list):
     Path("data").mkdir(exist_ok=True)
-    data = {
-        "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "alerts": alerts
-    }
-    with open(OPTIONS_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({
+            "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            key: items
+        }, f, ensure_ascii=False, indent=2)
 
 
-def save_oi_structure_cache(structures: list):
-    Path("data").mkdir(exist_ok=True)
-    data = {
-        "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "structures": structures
-    }
-    with open(OI_STRUCTURE_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def _load(path: Path, key: str) -> list:
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        t = datetime.strptime(data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+        if datetime.now() - t > timedelta(minutes=CACHE_MINUTES):
+            return []
+        return data.get(key, [])
+    except Exception:
+        return []
 
 
 def load_options_cache() -> list:
-    if not OPTIONS_CACHE_PATH.exists():
-        return []
-    try:
-        with open(OPTIONS_CACHE_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        scan_time = datetime.strptime(
-            data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
-        )
-        if datetime.now() - scan_time > timedelta(minutes=CACHE_MINUTES):
-            return []
-        return data.get("alerts", [])
-    except Exception as e:
-        logger.error(f"讀取期權快取失敗: {e}")
-        return []
+    return _load(OPTIONS_CACHE, "alerts")
 
 
 def load_oi_structure_cache() -> list:
-    if not OI_STRUCTURE_CACHE_PATH.exists():
-        return []
-    try:
-        with open(OI_STRUCTURE_CACHE_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        scan_time = datetime.strptime(
-            data.get("scan_time", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
-        )
-        if datetime.now() - scan_time > timedelta(minutes=CACHE_MINUTES):
-            return []
-        return data.get("structures", [])
-    except Exception as e:
-        logger.error(f"讀取 OI 結構快取失敗: {e}")
-        return []
+    return _load(OI_CACHE, "structures")
 
 
 def get_or_scan_options(force: bool = False) -> list:
@@ -337,12 +250,8 @@ def get_or_scan_options(force: bool = False) -> list:
         cached = load_options_cache()
         if cached:
             return cached
-
     alerts = scan_options_unusual()
-    save_options_cache(alerts)
-
-    # 同步更新 OI 結構
+    _save(OPTIONS_CACHE, "alerts", alerts)
     structures = scan_oi_structures()
-    save_oi_structure_cache(structures)
-
+    _save(OI_CACHE, "structures", structures)
     return alerts
